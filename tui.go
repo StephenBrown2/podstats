@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/filepicker"
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/bubbles/v2/filepicker"
+	"github.com/charmbracelet/bubbles/v2/list"
+	"github.com/charmbracelet/bubbles/v2/progress"
+	"github.com/charmbracelet/bubbles/v2/textinput"
+	tea "github.com/charmbracelet/bubbletea/v2"
+	"github.com/charmbracelet/lipgloss/v2"
 )
 
 // Screen types
@@ -173,7 +173,7 @@ func NewTUI() *tuiModel {
 	proc := processingModel{
 		progress: progress.New(progress.WithDefaultGradient()),
 	}
-	proc.progress.Width = 80 // Set default width
+	proc.progress.SetWidth(80) // Set default width
 
 	// Initialize empty results model
 	results := resultsModel{}
@@ -209,7 +209,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.processingModel.progress.Width = msg.Width - 4
+		m.processingModel.progress.SetWidth(msg.Width - 4)
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -305,7 +305,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case processingScreen:
 		if model, c := m.processingModel.progress.Update(msg); c != nil {
-			m.processingModel.progress = model.(progress.Model)
+			m.processingModel.progress = model
 			cmd = c
 		}
 		cmds = append(cmds, cmd)
@@ -438,7 +438,7 @@ func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
 			m.screen = processingScreen
 			// Ensure progress bar has proper width
 			if m.width > 0 {
-				m.processingModel.progress.Width = m.width - 4
+				m.processingModel.progress.SetWidth(m.width - 4)
 			}
 			return m.startProcessing()
 
