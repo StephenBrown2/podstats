@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss/v2"
 )
 
-// Screen types
+// Screen types.
 type screen int
 
 const (
@@ -27,7 +27,7 @@ const (
 	podcastDetailScreen
 )
 
-// Main TUI model
+// Main TUI model.
 type tuiModel struct {
 	screen          screen
 	filePicker      filepicker.Model
@@ -44,7 +44,7 @@ type tuiModel struct {
 	err             error
 }
 
-// Config screen model for cache options
+// Config screen model for cache options.
 type configModel struct {
 	inputs  []textinput.Model
 	focused int
@@ -54,7 +54,7 @@ type configModel struct {
 	}
 }
 
-// Processing screen model
+// Processing screen model.
 type processingModel struct {
 	progress     progress.Model
 	current      int
@@ -65,7 +65,7 @@ type processingModel struct {
 	podcasts     []Outline // Store podcasts being processed
 }
 
-// Sort modes for results
+// Sort modes for results.
 type sortMode int
 
 const (
@@ -75,7 +75,7 @@ const (
 	sortByPriorityDesc
 )
 
-// Results screen model
+// Results screen model.
 type resultsModel struct {
 	list     list.Model
 	selected int
@@ -83,7 +83,7 @@ type resultsModel struct {
 	sortMode sortMode
 }
 
-// Histogram screen model
+// Histogram screen model.
 type histogramModel struct {
 	stats    []PodcastStats
 	buckets  []int
@@ -91,14 +91,14 @@ type histogramModel struct {
 	maxCount int
 }
 
-// Detail screen model for individual podcast
+// Detail screen model for individual podcast.
 type detailModel struct {
 	podcast PodcastStats
 	inputs  []textinput.Model
 	focused int
 }
 
-// Messages
+// Messages.
 type podcastProcessedMsg struct {
 	stats    PodcastStats
 	index    int
@@ -119,7 +119,7 @@ type errorMsg struct {
 	err error
 }
 
-// Styles
+// Styles.
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -336,7 +336,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// Helper function to calculate bucket number for a given score
+// Helper function to calculate bucket number for a given score.
 func (m *tuiModel) calculateBucketNumber(score float64) int {
 	if len(m.histogramModel.stats) == 0 {
 		return 1
@@ -371,7 +371,7 @@ func (m *tuiModel) calculateBucketNumber(score float64) int {
 	return 10 - bucketIndex
 }
 
-// Sort and update the results list based on current sort mode
+// Sort and update the results list based on current sort mode.
 func (m *tuiModel) sortAndUpdateResults() {
 	stats := make([]PodcastStats, len(m.resultsModel.stats))
 	copy(stats, m.resultsModel.stats)
@@ -610,7 +610,7 @@ func (m *tuiModel) generateHistogram(stats []PodcastStats) histogramModel {
 
 	// Calculate the maximum width needed for formatting numbers
 	maxWidth := 0
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		low := minScore + float64(i)*bucketSize
 		high := minScore + float64(i+1)*bucketSize
 		lowStr := fmt.Sprintf("%.1f", low)
@@ -623,7 +623,7 @@ func (m *tuiModel) generateHistogram(stats []PodcastStats) histogramModel {
 		}
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		low := minScore + float64(i)*bucketSize
 		high := minScore + float64(i+1)*bucketSize
 		labels[i] = fmt.Sprintf("%*s - %*s", maxWidth, fmt.Sprintf("%.1f", low), maxWidth, fmt.Sprintf("%.1f", high))
@@ -959,7 +959,7 @@ func (m *tuiModel) detailView() string {
 	return s.String()
 }
 
-// Podcast list item
+// Podcast list item.
 type podcastItem struct {
 	PodcastStats
 	BucketNumber int

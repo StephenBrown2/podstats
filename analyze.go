@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// TUI-compatible version of analyzePodcast that doesn't require user input
-func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened bool, useCachedSpeed bool) (PodcastStats, error) {
+// TUI-compatible version of analyzePodcast that doesn't require user input.
+func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, useCachedSpeed bool) (PodcastStats, error) {
 	stats := PodcastStats{
 		Title: podcast.Title,
 		URL:   podcast.XMLURL,
@@ -25,7 +25,7 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened bo
 
 	// Fetch the RSS/Atom feed with proper user agent
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", podcast.XMLURL, nil)
+	req, err := http.NewRequest(http.MethodGet, podcast.XMLURL, nil)
 	if err != nil {
 		return stats, err
 	}
@@ -89,7 +89,7 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened bo
 	}
 
 	// Handle playback speed
-	var playbackSpeed float64 = 2.0
+	playbackSpeed := 2.0
 	if cachedSpeed, found := getCachedPlaybackSpeed(cache, podcast.XMLURL); found && useCachedSpeed {
 		playbackSpeed = cachedSpeed
 	} else if cachedSpeed, found := getCachedPlaybackSpeed(cache, podcast.XMLURL); found {
@@ -112,8 +112,8 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened bo
 	return stats, nil
 }
 
-// Original analyzePodcast function remains unchanged for CLI mode
-func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened bool, useCachedSpeed bool) (PodcastStats, error) {
+// Original analyzePodcast function remains unchanged for CLI mode.
+func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened, useCachedSpeed bool) (PodcastStats, error) {
 	stats := PodcastStats{
 		Title: podcast.Title,
 		URL:   podcast.XMLURL,
@@ -126,7 +126,7 @@ func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened bo
 
 	// Fetch the RSS/Atom feed with proper user agent
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", podcast.XMLURL, nil)
+	req, err := http.NewRequest(http.MethodGet, podcast.XMLURL, nil)
 	if err != nil {
 		return stats, err
 	}
@@ -245,7 +245,7 @@ func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened bo
 	}
 
 	// Handle playback speed
-	var playbackSpeed float64 = 2.0
+	playbackSpeed := 2.0
 	if cachedSpeed, found := getCachedPlaybackSpeed(cache, podcast.XMLURL); found {
 		fmt.Printf("  Cached playback speed: %.1fx\n", cachedSpeed)
 

@@ -16,7 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss/v2/table"
 )
 
-// OPML structures
+// OPML structures.
 type OPML struct {
 	XMLName xml.Name `xml:"opml"`
 	Head    Head     `xml:"head"`
@@ -40,7 +40,7 @@ type Outline struct {
 	Outlines []Outline `xml:"outline"`
 }
 
-// RSS/Atom feed structures
+// RSS/Atom feed structures.
 type RSS struct {
 	XMLName xml.Name `xml:"rss"`
 	Channel Channel  `xml:"channel"`
@@ -95,7 +95,7 @@ type ValueRecipient struct {
 	Split   string `xml:"split,attr"`
 }
 
-// Statistics structure
+// Statistics structure.
 type PodcastStats struct {
 	Title                string
 	URL                  string
@@ -107,7 +107,7 @@ type PodcastStats struct {
 	CompositeScore       float64
 }
 
-// Cache structure for storing user input
+// Cache structure for storing user input.
 type PodcastCache struct {
 	URL                string  `json:"url"`
 	UnlistenedEpisodes int     `json:"unlistened_episodes"`
@@ -119,7 +119,7 @@ type CacheData struct {
 	Podcasts []PodcastCache `json:"podcasts"`
 }
 
-// loadCache loads the cache from the cache file
+// loadCache loads the cache from the cache file.
 func loadCache(cacheFile string) *CacheData {
 	cache := &CacheData{Podcasts: []PodcastCache{}}
 
@@ -138,7 +138,7 @@ func loadCache(cacheFile string) *CacheData {
 	return cache
 }
 
-// saveCache saves the cache to the cache file
+// saveCache saves the cache to the cache file.
 func saveCache(cacheFile string, cache *CacheData) error {
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
@@ -148,7 +148,7 @@ func saveCache(cacheFile string, cache *CacheData) error {
 	return os.WriteFile(cacheFile, data, 0o644)
 }
 
-// getCachedUnlistenedCount gets the cached unlistened count for a podcast URL
+// getCachedUnlistenedCount gets the cached unlistened count for a podcast URL.
 func getCachedUnlistenedCount(cache *CacheData, url string) (int, bool) {
 	for _, podcast := range cache.Podcasts {
 		if podcast.URL == url {
@@ -158,7 +158,7 @@ func getCachedUnlistenedCount(cache *CacheData, url string) (int, bool) {
 	return 0, false
 }
 
-// getCachedPlaybackSpeed gets the cached playback speed for a podcast URL
+// getCachedPlaybackSpeed gets the cached playback speed for a podcast URL.
 func getCachedPlaybackSpeed(cache *CacheData, url string) (float64, bool) {
 	for _, podcast := range cache.Podcasts {
 		if podcast.URL == url {
@@ -172,13 +172,13 @@ func getCachedPlaybackSpeed(cache *CacheData, url string) (float64, bool) {
 	return 2.0, false
 }
 
-// updateCache updates the cache with new unlistened count for a podcast
+// updateCache updates the cache with new unlistened count for a podcast.
 func updateCache(cache *CacheData, url string, unlistenedCount int) {
 	// Look for existing entry
 	for i, podcast := range cache.Podcasts {
 		if podcast.URL == url {
 			cache.Podcasts[i].UnlistenedEpisodes = unlistenedCount
-			cache.Podcasts[i].LastUpdated = time.Now().Format("2006-01-02 15:04:05")
+			cache.Podcasts[i].LastUpdated = time.Now().Format(time.DateTime)
 			return
 		}
 	}
@@ -188,18 +188,18 @@ func updateCache(cache *CacheData, url string, unlistenedCount int) {
 		URL:                url,
 		UnlistenedEpisodes: unlistenedCount,
 		PlaybackSpeed:      2.0, // Default playback speed
-		LastUpdated:        time.Now().Format("2006-01-02 15:04:05"),
+		LastUpdated:        time.Now().Format(time.DateTime),
 	})
 }
 
-// updateCacheWithPlaybackSpeed updates the cache with both unlistened count and playback speed
+// updateCacheWithPlaybackSpeed updates the cache with both unlistened count and playback speed.
 func updateCacheWithPlaybackSpeed(cache *CacheData, url string, unlistenedCount int, playbackSpeed float64) {
 	// Look for existing entry
 	for i, podcast := range cache.Podcasts {
 		if podcast.URL == url {
 			cache.Podcasts[i].UnlistenedEpisodes = unlistenedCount
 			cache.Podcasts[i].PlaybackSpeed = playbackSpeed
-			cache.Podcasts[i].LastUpdated = time.Now().Format("2006-01-02 15:04:05")
+			cache.Podcasts[i].LastUpdated = time.Now().Format(time.DateTime)
 			return
 		}
 	}
@@ -209,7 +209,7 @@ func updateCacheWithPlaybackSpeed(cache *CacheData, url string, unlistenedCount 
 		URL:                url,
 		UnlistenedEpisodes: unlistenedCount,
 		PlaybackSpeed:      playbackSpeed,
-		LastUpdated:        time.Now().Format("2006-01-02 15:04:05"),
+		LastUpdated:        time.Now().Format(time.DateTime),
 	})
 }
 
@@ -316,7 +316,7 @@ func main() {
 	displayHistogram(allStats)
 }
 
-// parseOPML reads and parses an OPML file, extracting podcast feed URLs
+// parseOPML reads and parses an OPML file, extracting podcast feed URLs.
 func parseOPML(filename string) ([]Outline, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -339,7 +339,7 @@ func parseOPML(filename string) ([]Outline, error) {
 	return podcasts, nil
 }
 
-// extractOutlines recursively extracts podcast outlines with XML URLs
+// extractOutlines recursively extracts podcast outlines with XML URLs.
 func extractOutlines(outlines []Outline, podcasts *[]Outline) {
 	for _, outline := range outlines {
 		if outline.XMLURL != "" {
@@ -351,21 +351,21 @@ func extractOutlines(outlines []Outline, podcasts *[]Outline) {
 	}
 }
 
-// parseRSS parses RSS feed data
+// parseRSS parses RSS feed data.
 func parseRSS(data []byte) (*RSS, error) {
 	var rss RSS
 	err := xml.Unmarshal(data, &rss)
 	return &rss, err
 }
 
-// parseAtom parses Atom feed data
+// parseAtom parses Atom feed data.
 func parseAtom(data []byte) (*Atom, error) {
 	var atom Atom
 	err := xml.Unmarshal(data, &atom)
 	return &atom, err
 }
 
-// extractDatesFromRSS extracts publication dates from RSS items
+// extractDatesFromRSS extracts publication dates from RSS items.
 func extractDatesFromRSS(items []Item) []time.Time {
 	var dates []time.Time
 	for _, item := range items {
@@ -379,7 +379,7 @@ func extractDatesFromRSS(items []Item) []time.Time {
 	return dates
 }
 
-// extractDatesFromAtom extracts publication dates from Atom entries
+// extractDatesFromAtom extracts publication dates from Atom entries.
 func extractDatesFromAtom(entries []Entry) []time.Time {
 	var dates []time.Time
 	for _, entry := range entries {
@@ -397,14 +397,12 @@ func extractDatesFromAtom(entries []Entry) []time.Time {
 	return dates
 }
 
-// parseDate attempts to parse various date formats
+// parseDate attempts to parse various date formats.
 func parseDate(dateStr string) (time.Time, error) {
 	formats := []string{
 		time.RFC1123,
 		time.RFC1123Z,
 		time.RFC3339,
-		"Mon, 02 Jan 2006 15:04:05 -0700",
-		"Mon, 02 Jan 2006 15:04:05 MST",
 		"Mon, 2 Jan 2006 15:04:05 -0700",
 		"Mon, 2 Jan 2006 15:04:05 MST",
 		"2006-01-02T15:04:05Z",
@@ -419,7 +417,7 @@ func parseDate(dateStr string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unable to parse date: %s", dateStr)
 }
 
-// calculateAverageLength calculates average episode length in minutes
+// calculateAverageLength calculates average episode length in minutes.
 func calculateAverageLength(items []Item) float64 {
 	totalMinutes := 0.0
 	count := 0
@@ -439,7 +437,7 @@ func calculateAverageLength(items []Item) float64 {
 	return totalMinutes / float64(count)
 }
 
-// parseDuration parses duration string (supports HH:MM:SS, MM:SS, seconds)
+// parseDuration parses duration string (supports HH:MM:SS, MM:SS, seconds).
 func parseDuration(duration string) float64 {
 	duration = strings.TrimSpace(duration)
 
@@ -484,14 +482,14 @@ func parseDuration(duration string) float64 {
 	return hours*60 + minutes + seconds/60
 }
 
-// calculateAverageDaysBetween calculates average days between episodes
+// calculateAverageDaysBetween calculates average days between episodes.
 func calculateAverageDaysBetween(dates []time.Time) float64 {
 	if len(dates) < 2 {
 		return 7.0 // Default assumption: weekly
 	}
 
 	totalDays := 0.0
-	for i := 0; i < len(dates)-1; i++ {
+	for i := range len(dates) - 1 {
 		days := dates[i].Sub(dates[i+1]).Hours() / 24
 		totalDays += days
 	}
@@ -499,7 +497,7 @@ func calculateAverageDaysBetween(dates []time.Time) float64 {
 	return totalDays / float64(len(dates)-1)
 }
 
-// calculateDaysSinceLatest calculates days since the most recent episode
+// calculateDaysSinceLatest calculates days since the most recent episode.
 func calculateDaysSinceLatest(dates []time.Time) float64 {
 	if len(dates) == 0 {
 		return 365.0 // Default: very old
@@ -507,12 +505,12 @@ func calculateDaysSinceLatest(dates []time.Time) float64 {
 	return time.Since(dates[0]).Hours() / 24
 }
 
-// calculateCompositeScore creates a single score from all metrics
+// calculateCompositeScore creates a single score from all metrics.
 func calculateCompositeScore(stats PodcastStats) float64 {
 	return float64(stats.UnlistenedEpisodes)*stats.AvgEpisodeLengthMins + stats.AvgDaysBetween + stats.DaysSinceLatest
 }
 
-// displayHistogram creates and displays a histogram of composite scores
+// displayHistogram creates and displays a histogram of composite scores.
 func displayHistogram(allStats []PodcastStats) {
 	if len(allStats) == 0 {
 		fmt.Println("No podcast data to display")
@@ -542,7 +540,7 @@ func displayHistogram(allStats []PodcastStats) {
 
 	// Calculate the maximum width needed for formatting numbers
 	maxWidth := 0
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		low := minScore + float64(i)*bucketSize
 		high := minScore + float64(i+1)*bucketSize
 		lowStr := fmt.Sprintf("%.1f", low)
@@ -555,7 +553,7 @@ func displayHistogram(allStats []PodcastStats) {
 		}
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		low := minScore + float64(i)*bucketSize
 		high := minScore + float64(i+1)*bucketSize
 		bucketLabels[i] = fmt.Sprintf("%*s - %*s", maxWidth, fmt.Sprintf("%.1f", low), maxWidth, fmt.Sprintf("%.1f", high))
