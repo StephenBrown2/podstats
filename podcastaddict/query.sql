@@ -25,8 +25,17 @@ WHERE p.subscribed_status IS TRUE
 ORDER BY p.priority DESC,
     p.name ASC;
 
--- name: GetPodcastStatsByCategory :many
--- Retrieve podcast statistics filtered by category
+-- name: GetTags :many
+-- Get all tags from subscribed podcasts
+SELECT DISTINCT t.name
+FROM tags t
+INNER JOIN tag_relation tr ON t._id = tr.tag_id
+INNER JOIN podcasts p ON tr.podcast_id = p._id
+WHERE p.subscribed_status IS TRUE
+ORDER BY t.name ASC;
+
+-- name: GetPodcastStatsByTag :many
+-- Retrieve podcast statistics filtered by tag
 SELECT p.name,
     p.author,
     p.feed_url,
@@ -42,16 +51,9 @@ FROM podcasts p
         WHERE seen_status = 0 -- 0 = FALSE (not seen/unplayed)
         GROUP BY podcast_id
     ) e ON p._id = e.podcast_id
+    INNER JOIN tag_relation tr ON p._id = tr.podcast_id
+    INNER JOIN tags t ON tr.tag_id = t._id
 WHERE p.subscribed_status IS TRUE
-    AND p.category = ?
+    AND t.name = ?
 ORDER BY p.priority DESC,
     p.name ASC;
-
--- name: GetCategories :many
--- Get all unique categories from subscribed podcasts
-SELECT DISTINCT p.category
-FROM podcasts p
-WHERE p.subscribed_status IS TRUE
-    AND p.category IS NOT NULL
-    AND p.category != ''
-ORDER BY p.category ASC;

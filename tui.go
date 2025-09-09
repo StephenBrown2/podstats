@@ -22,6 +22,7 @@ type screen int
 const (
 	fileSelectScreen screen = iota
 	configScreen
+	tagSelectScreen
 	processingScreen
 	resultsScreen
 	histogramScreen
@@ -34,6 +35,7 @@ type tuiModel struct {
 	screen            screen
 	filePicker        filepicker.Model
 	configModel       configModel
+	tagSelectModel    tagSelectModel
 	processingModel   processingModel
 	resultsModel      resultsModel
 	histogramModel    histogramModel
@@ -56,6 +58,26 @@ type configModel struct {
 		useCachedSpeed      bool
 		useCachedUnlistened bool
 	}
+}
+
+// Tag selection screen model for backup files.
+type tagSelectModel struct {
+	list        list.Model
+	tags        []string
+	selectedTag string
+	showAllTags bool
+}
+
+// Tag item for list display
+type tagItem struct {
+	name        string
+	isAllOption bool
+}
+
+func (t tagItem) FilterValue() string { return t.name }
+func (t tagItem) Title() string       { return t.name }
+func (t tagItem) Description() string {
+	return "" // No description to keep the list compact
 }
 
 // Processing screen model.
@@ -124,6 +146,10 @@ type podcastProcessedMsg struct {
 
 type processingSetupMsg struct {
 	podcasts []Outline
+}
+
+type tagsLoadedMsg struct {
+	tags []string
 }
 
 type processingCompleteMsg struct {
@@ -243,6 +269,8 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.screen {
 			case configScreen:
 				m.screen = fileSelectScreen
+			case tagSelectScreen:
+				m.screen = configScreen
 			case processingScreen:
 				// Can't escape processing
 			case resultsScreen:
@@ -257,6 +285,30 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errorMsg:
 		m.err = msg.err
+
+	case tagsLoadedMsg:
+		// Initialize tag selection screen
+		m.tagSelectModel.tags = msg.tags
+		m.tagSelectModel.showAllTags = true
+
+		// Create list items with "All podcasts" option first
+		items := make([]list.Item, len(msg.tags)+1)
+		items[0] = tagItem{name: "All podcasts", isAllOption: true}
+		for i, tag := range msg.tags {
+			items[i+1] = tagItem{name: tag, isAllOption: false}
+		}
+
+		delegate := list.NewDefaultDelegate()
+		delegate.SetHeight(1)
+		delegate.SetSpacing(0)
+		delegate.ShowDescription = false
+		delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
+			Foreground(lipgloss.Color("#7D56F4")).
+			BorderLeftForeground(lipgloss.Color("#7D56F4"))
+
+		m.tagSelectModel.list = list.New(items, delegate, m.width, m.height-8)
+		m.tagSelectModel.list.Title = "🏷️  Select Tag Filter"
+		m.tagSelectModel.list.Styles.Title = titleStyle
 
 	case processingSetupMsg:
 		m.processingModel.podcasts = msg.podcasts
@@ -334,6 +386,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case configScreen:
 		cmd = m.updateConfigScreen(msg)
+		cmds = append(cmds, cmd)
+
+	case tagSelectScreen:
+		cmd = m.updateTagSelectScreen(msg)
 		cmds = append(cmds, cmd)
 
 	case processingScreen:
@@ -472,12 +528,19 @@ func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
 			m.configModel.options.useCachedSpeed = speed == "y" || speed == "yes"
 			m.configModel.options.useCachedUnlistened = unlistened == "y" || unlistened == "yes"
 
-			m.screen = processingScreen
-			// Ensure progress bar has proper width
-			if m.width > 0 {
-				m.processingModel.progress.SetWidth(m.width - 4)
+			// For backup files, go to tag selection screen
+			if m.isBackupFile {
+				m.screen = tagSelectScreen
+				return m.loadTags()
+			} else {
+				// For OPML files, go directly to processing
+				m.screen = processingScreen
+				// Ensure progress bar has proper width
+				if m.width > 0 {
+					m.processingModel.progress.SetWidth(m.width - 4)
+				}
+				return m.startProcessing()
 			}
-			return m.startProcessing()
 
 		case "tab", "shift+tab", "up", "down":
 			if msg.String() == "up" || msg.String() == "shift+tab" {
@@ -509,6 +572,37 @@ func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+func (m *tuiModel) updateTagSelectScreen(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			// Get selected tag and proceed to processing
+			if selected := m.tagSelectModel.list.SelectedItem(); selected != nil {
+				item := selected.(tagItem)
+				if item.isAllOption {
+					m.tagSelectModel.selectedTag = ""
+				} else {
+					m.tagSelectModel.selectedTag = item.name
+				}
+
+				m.screen = processingScreen
+				// Ensure progress bar has proper width
+				if m.width > 0 {
+					m.processingModel.progress.SetWidth(m.width - 4)
+				}
+				return m.startProcessing()
+			}
+		case "esc":
+			m.screen = configScreen
+		}
+	}
+
+	var cmd tea.Cmd
+	m.tagSelectModel.list, cmd = m.tagSelectModel.list.Update(msg)
+	return cmd
 }
 
 func (m *tuiModel) updateResultsScreen(msg tea.Msg) tea.Cmd {
@@ -758,6 +852,8 @@ func (m *tuiModel) View() string {
 		return m.fileSelectView()
 	case configScreen:
 		return m.configView()
+	case tagSelectScreen:
+		return m.tagSelectView()
 	case processingScreen:
 		return m.processingView()
 	case resultsScreen:
@@ -819,6 +915,28 @@ func (m *tuiModel) configView() string {
 
 	s.WriteString("💡 ")
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Tab/Shift+Tab to navigate, Enter to start, Esc to go back"))
+
+	return s.String()
+}
+
+func (m *tuiModel) tagSelectView() string {
+	var s strings.Builder
+
+	s.WriteString(titleStyle.Render("🏷️  Tag Selection"))
+	s.WriteString("\n")
+	s.WriteString(subtitleStyle.Render(fmt.Sprintf("File: %s", m.opmlFile)))
+	s.WriteString("\n\n")
+
+	s.WriteString("Select a tag to filter podcasts:\n\n")
+
+	if len(m.tagSelectModel.tags) == 0 {
+		s.WriteString("Loading tags...")
+	} else {
+		s.WriteString(m.tagSelectModel.list.View())
+	}
+
+	s.WriteString("\n\n💡 ")
+	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Enter to select, Esc to go back"))
 
 	return s.String()
 }
@@ -1063,8 +1181,12 @@ func (m *tuiModel) startProcessing() tea.Cmd {
 		var err error
 
 		if m.isBackupFile {
-			// Extract podcasts from backup file
-			podcasts, err = extractPodcastsFromBackup(m.opmlFile)
+			// Extract podcasts from backup file with tag filter
+			if m.tagSelectModel.selectedTag != "" {
+				podcasts, err = extractPodcastsFromBackupWithTag(m.opmlFile, m.tagSelectModel.selectedTag)
+			} else {
+				podcasts, err = extractPodcastsFromBackup(m.opmlFile)
+			}
 		} else {
 			// Parse OPML file
 			podcasts, err = parseOPML(m.opmlFile)
@@ -1079,6 +1201,86 @@ func (m *tuiModel) startProcessing() tea.Cmd {
 			podcasts: podcasts,
 		}
 	})
+}
+
+func (m *tuiModel) loadTags() tea.Cmd {
+	return tea.Cmd(func() tea.Msg {
+		backupManager, err := NewBackupManager(m.opmlFile)
+		if err != nil {
+			return errorMsg{err}
+		}
+		defer backupManager.Close()
+
+		if err := backupManager.ExtractDatabase(); err != nil {
+			return errorMsg{err}
+		}
+
+		if err := backupManager.OpenDatabase(); err != nil {
+			return errorMsg{err}
+		}
+
+		tags, err := backupManager.GetTags(context.Background())
+		if err != nil {
+			return errorMsg{err}
+		}
+
+		return tagsLoadedMsg{tags: tags}
+	})
+}
+
+// extractPodcastsFromBackupWithTag extracts podcasts from backup filtered by tag
+func extractPodcastsFromBackupWithTag(backupFile string, tag string) ([]Outline, error) {
+	bm, err := NewBackupManager(backupFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open backup file: %w", err)
+	}
+	defer bm.Close()
+
+	if err := bm.ExtractDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to extract database: %w", err)
+	}
+
+	if err := bm.OpenDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	ctx := context.Background()
+
+	if tag == "" {
+		// No tag filter, get all podcasts
+		backupStats, err := bm.GetPodcastStats(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
+		}
+
+		var podcasts []Outline
+		for _, stat := range backupStats {
+			podcast := Outline{
+				Title:  stat.Name,
+				XMLURL: stat.FeedUrl,
+				Text:   stat.Name,
+			}
+			podcasts = append(podcasts, podcast)
+		}
+		return podcasts, nil
+	} else {
+		// Filter by selected tag
+		backupStats, err := bm.GetPodcastStatsByTag(ctx, tag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
+		}
+
+		var podcasts []Outline
+		for _, stat := range backupStats {
+			podcast := Outline{
+				Title:  stat.Name,
+				XMLURL: stat.FeedUrl,
+				Text:   stat.Name,
+			}
+			podcasts = append(podcasts, podcast)
+		}
+		return podcasts, nil
+	}
 }
 
 func (m *tuiModel) processNextPodcast() tea.Cmd {

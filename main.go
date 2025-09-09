@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -400,24 +402,53 @@ func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	ctx := context.Background()
-	backupStats, err := bm.GetPodcastStats(ctx)
+	// Prompt user for tag selection
+	selectedTag, err := promptForTag(bm)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
+		return nil, fmt.Errorf("failed to get tag selection: %w", err)
 	}
 
-	// Convert backup stats to Outline format for analysis
-	var podcasts []Outline
-	for _, stat := range backupStats {
-		podcast := Outline{
-			Title:  stat.Name,
-			XMLURL: stat.FeedUrl,
-			Text:   stat.Name, // fallback
+	ctx := context.Background()
+
+	if selectedTag == "" {
+		// No tag filter, get all podcasts
+		fmt.Println("Analyzing all podcasts...")
+		backupStats, err := bm.GetPodcastStats(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
 		}
-		podcasts = append(podcasts, podcast)
-	}
 
-	return podcasts, nil
+		// Convert backup stats to Outline format for analysis
+		var podcasts []Outline
+		for _, stat := range backupStats {
+			podcast := Outline{
+				Title:  stat.Name,
+				XMLURL: stat.FeedUrl,
+				Text:   stat.Name, // fallback
+			}
+			podcasts = append(podcasts, podcast)
+		}
+		return podcasts, nil
+	} else {
+		// Filter by selected tag
+		fmt.Printf("Analyzing podcasts with tag: %s\n", selectedTag)
+		backupStats, err := bm.GetPodcastStatsByTag(ctx, selectedTag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
+		}
+
+		// Convert backup stats to Outline format for analysis
+		var podcasts []Outline
+		for _, stat := range backupStats {
+			podcast := Outline{
+				Title:  stat.Name,
+				XMLURL: stat.FeedUrl,
+				Text:   stat.Name, // fallback
+			}
+			podcasts = append(podcasts, podcast)
+		}
+		return podcasts, nil
+	}
 }
 
 func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
@@ -556,39 +587,38 @@ func showBackupStats(backupFile string) {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	ctx := context.Background()
-	stats, err := bm.GetPodcastStats(ctx)
+	// Prompt user for tag selection
+	selectedTag, err := promptForTag(bm)
 	if err != nil {
-		log.Fatalf("Failed to get podcast stats: %v", err)
+		log.Fatalf("Failed to get tag selection: %v", err)
 	}
 
-	fmt.Printf("Found %d subscribed podcasts in backup:\n\n", len(stats))
+	ctx := context.Background()
 
-	for _, stat := range stats {
-		author := "Unknown"
-		if stat.Author.Valid {
-			author = stat.Author.String
+	if selectedTag == "" {
+		// Show all podcasts
+		stats, err := bm.GetPodcastStats(ctx)
+		if err != nil {
+			log.Fatalf("Failed to get podcast stats: %v", err)
 		}
 
-		avgDuration := "Unknown"
-		if stat.AverageDuration.Valid {
-			mins := stat.AverageDuration.Int64 / 1000 / 60 // Convert ms to minutes
-			avgDuration = fmt.Sprintf("%d mins", mins)
+		fmt.Printf("Found %d subscribed podcasts in backup:\n\n", len(stats))
+
+		for _, stat := range stats {
+			displayPodcastStat(stat.Name, stat.Author, stat.FeedUrl, stat.UnplayedEpisodes, stat.AverageDuration, stat.Frequency, stat.Priority)
+		}
+	} else {
+		// Show podcasts filtered by tag
+		stats, err := bm.GetPodcastStatsByTag(ctx, selectedTag)
+		if err != nil {
+			log.Fatalf("Failed to get podcast stats by tag: %v", err)
 		}
 
-		frequency := "Unknown"
-		if stat.Frequency.Valid {
-			frequency = fmt.Sprintf("%d days", stat.Frequency.Int64)
-		}
+		fmt.Printf("Found %d podcasts with tag '%s':\n\n", len(stats), selectedTag)
 
-		fmt.Printf("Name: %s\n", stat.Name)
-		fmt.Printf("  Author: %s\n", author)
-		fmt.Printf("  Feed URL: %s\n", stat.FeedUrl)
-		fmt.Printf("  Unlistened: %d episodes\n", stat.UnplayedEpisodes)
-		fmt.Printf("  Average Duration: %s\n", avgDuration)
-		fmt.Printf("  Frequency: %s\n", frequency)
-		fmt.Printf("  Priority: %d\n", stat.Priority)
-		fmt.Println()
+		for _, stat := range stats {
+			displayPodcastStat(stat.Name, stat.Author, stat.FeedUrl, stat.UnplayedEpisodes, stat.AverageDuration, stat.Frequency, stat.Priority)
+		}
 	}
 }
 
@@ -808,7 +838,8 @@ func calculateDaysSinceLatest(dates []time.Time) float64 {
 
 // calculateCompositeScore creates a single score from all metrics.
 func calculateCompositeScore(stats PodcastStats) float64 {
-	return float64(stats.UnlistenedEpisodes)*stats.AvgEpisodeLengthMins - stats.AvgDaysBetween - stats.DaysSinceLatest
+	// return float64(stats.UnlistenedEpisodes)*stats.AvgEpisodeLengthMins - stats.AvgDaysBetween - stats.DaysSinceLatest
+	return stats.AvgEpisodeLengthMins
 }
 
 // displayHistogram creates and displays a histogram of composite scores.
@@ -987,4 +1018,77 @@ func displayHistogram(allStats []PodcastStats) {
 	}
 	// Display the sorted rankings
 	fmt.Println(tbl)
+}
+
+// promptForTag prompts the user to select a tag filter
+func promptForTag(bm *BackupManager) (string, error) {
+	ctx := context.Background()
+
+	// Get all tags
+	tags, err := bm.GetTags(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get tags: %w", err)
+	}
+
+	if len(tags) == 0 {
+		fmt.Println("No tags found in the database.")
+		return "", nil
+	}
+
+	fmt.Println("\nAvailable tags:")
+	fmt.Println("0. [All podcasts]")
+	for i, tag := range tags {
+		fmt.Printf("%d. %s\n", i+1, tag)
+	}
+
+	fmt.Print("\nSelect a tag (0 for all, or enter tag number): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return "", fmt.Errorf("failed to read input")
+	}
+
+	input := strings.TrimSpace(scanner.Text())
+	if input == "" || input == "0" {
+		return "", nil // No filter
+	}
+
+	choice, err := strconv.Atoi(input)
+	if err != nil {
+		return "", fmt.Errorf("invalid choice: %s", input)
+	}
+
+	if choice < 1 || choice > len(tags) {
+		return "", fmt.Errorf("choice out of range: %d", choice)
+	}
+
+	return tags[choice-1], nil
+}
+
+// displayPodcastStat displays a single podcast's statistics in a consistent format
+func displayPodcastStat(name string, author sql.NullString, feedUrl string, unplayedEpisodes int64, avgDuration sql.NullInt64, frequency sql.NullInt64, priority int64) {
+	authorStr := "Unknown"
+	if author.Valid {
+		authorStr = author.String
+	}
+
+	avgDurationStr := "Unknown"
+	if avgDuration.Valid {
+		mins := avgDuration.Int64 / 1000 / 60 // Convert ms to minutes
+		avgDurationStr = fmt.Sprintf("%d mins", mins)
+	}
+
+	frequencyStr := "Unknown"
+	if frequency.Valid {
+		frequencyStr = fmt.Sprintf("%d days", frequency.Int64)
+	}
+
+	fmt.Printf("Name: %s\n", name)
+	fmt.Printf("  Author: %s\n", authorStr)
+	fmt.Printf("  Feed URL: %s\n", feedUrl)
+	fmt.Printf("  Unlistened: %d episodes\n", unplayedEpisodes)
+	fmt.Printf("  Average Duration: %s\n", avgDurationStr)
+	fmt.Printf("  Frequency: %s\n", frequencyStr)
+	fmt.Printf("  Priority: %d\n", priority)
+	fmt.Println()
 }

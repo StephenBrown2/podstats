@@ -10,39 +10,6 @@ import (
 	"database/sql"
 )
 
-const getCategories = `-- name: GetCategories :many
-SELECT DISTINCT p.category
-FROM podcasts p
-WHERE p.subscribed_status IS TRUE
-    AND p.category IS NOT NULL
-    AND p.category != ''
-ORDER BY p.category ASC
-`
-
-// Get all unique categories from subscribed podcasts
-func (q *Queries) GetCategories(ctx context.Context) ([]sql.NullString, error) {
-	rows, err := q.db.QueryContext(ctx, getCategories)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []sql.NullString
-	for rows.Next() {
-		var category sql.NullString
-		if err := rows.Scan(&category); err != nil {
-			return nil, err
-		}
-		items = append(items, category)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getPodcastStats = `-- name: GetPodcastStats :many
 SELECT p.name,
     p.author,
@@ -106,7 +73,7 @@ func (q *Queries) GetPodcastStats(ctx context.Context) ([]GetPodcastStatsRow, er
 	return items, nil
 }
 
-const getPodcastStatsByCategory = `-- name: GetPodcastStatsByCategory :many
+const getPodcastStatsByTag = `-- name: GetPodcastStatsByTag :many
 SELECT p.name,
     p.author,
     p.feed_url,
@@ -122,13 +89,15 @@ FROM podcasts p
         WHERE seen_status = 0 -- 0 = FALSE (not seen/unplayed)
         GROUP BY podcast_id
     ) e ON p._id = e.podcast_id
+    INNER JOIN tag_relation tr ON p._id = tr.podcast_id
+    INNER JOIN tags t ON tr.tag_id = t._id
 WHERE p.subscribed_status IS TRUE
-    AND p.category = ?
+    AND t.name = ?
 ORDER BY p.priority DESC,
     p.name ASC
 `
 
-type GetPodcastStatsByCategoryRow struct {
+type GetPodcastStatsByTagRow struct {
 	Name             string
 	Author           sql.NullString
 	FeedUrl          string
@@ -138,16 +107,16 @@ type GetPodcastStatsByCategoryRow struct {
 	Priority         int64
 }
 
-// Retrieve podcast statistics filtered by category
-func (q *Queries) GetPodcastStatsByCategory(ctx context.Context, category sql.NullString) ([]GetPodcastStatsByCategoryRow, error) {
-	rows, err := q.db.QueryContext(ctx, getPodcastStatsByCategory, category)
+// Retrieve podcast statistics filtered by tag
+func (q *Queries) GetPodcastStatsByTag(ctx context.Context, name string) ([]GetPodcastStatsByTagRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPodcastStatsByTag, name)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []GetPodcastStatsByCategoryRow
+	var items []GetPodcastStatsByTagRow
 	for rows.Next() {
-		var i GetPodcastStatsByCategoryRow
+		var i GetPodcastStatsByTagRow
 		if err := rows.Scan(
 			&i.Name,
 			&i.Author,
@@ -160,6 +129,39 @@ func (q *Queries) GetPodcastStatsByCategory(ctx context.Context, category sql.Nu
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getTags = `-- name: GetTags :many
+SELECT DISTINCT t.name
+FROM tags t
+INNER JOIN tag_relation tr ON t._id = tr.tag_id
+INNER JOIN podcasts p ON tr.podcast_id = p._id
+WHERE p.subscribed_status IS TRUE
+ORDER BY t.name ASC
+`
+
+// Get all tags from subscribed podcasts
+func (q *Queries) GetTags(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getTags)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

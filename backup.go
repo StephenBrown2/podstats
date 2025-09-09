@@ -114,35 +114,22 @@ func (bm *BackupManager) GetPodcastStats(ctx context.Context) ([]podcastaddict.G
 	return bm.dbQueries.GetPodcastStats(ctx)
 }
 
-// GetPodcastStatsByCategory retrieves podcast statistics filtered by category.
-func (bm *BackupManager) GetPodcastStatsByCategory(ctx context.Context, category string) ([]podcastaddict.GetPodcastStatsByCategoryRow, error) {
+// GetPodcastStatsByTag retrieves podcast statistics filtered by tag.
+func (bm *BackupManager) GetPodcastStatsByTag(ctx context.Context, tag string) ([]podcastaddict.GetPodcastStatsByTagRow, error) {
 	if bm.dbQueries == nil {
 		return nil, fmt.Errorf("database not opened")
 	}
 
-	categoryParam := sql.NullString{String: category, Valid: true}
-	return bm.dbQueries.GetPodcastStatsByCategory(ctx, categoryParam)
+	return bm.dbQueries.GetPodcastStatsByTag(ctx, tag)
 }
 
-// GetCategories retrieves all available categories from the database.
-func (bm *BackupManager) GetCategories(ctx context.Context) ([]string, error) {
+// GetTags retrieves all available tags from the database.
+func (bm *BackupManager) GetTags(ctx context.Context) ([]string, error) {
 	if bm.dbQueries == nil {
 		return nil, fmt.Errorf("database not opened")
 	}
 
-	categories, err := bm.dbQueries.GetCategories(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []string
-	for _, cat := range categories {
-		if cat.Valid && cat.String != "" {
-			result = append(result, cat.String)
-		}
-	}
-
-	return result, nil
+	return bm.dbQueries.GetTags(ctx)
 }
 
 // UpdatePodcastPriority updates the priority of a podcast by its feed URL.
