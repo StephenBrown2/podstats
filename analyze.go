@@ -115,8 +115,9 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, u
 // Original analyzePodcast function remains unchanged for CLI mode.
 func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened, useCachedSpeed bool) (PodcastStats, error) {
 	stats := PodcastStats{
-		Title: podcast.Title,
-		URL:   podcast.XMLURL,
+		Title:     podcast.Title,
+		SortTitle: podcast.SortTitle,
+		URL:       podcast.XMLURL,
 	}
 
 	if stats.Title == "" {
@@ -166,7 +167,7 @@ func analyzePodcastCLI(podcast Outline, cache *CacheData, useCachedUnlistened, u
 
 	// Update title with lightning bolt if podcast supports value-for-value
 	if hasValue && !strings.HasPrefix(stats.Title, "⚡") {
-		stats.Title = "⚡" + stats.Title
+		stats.Title = "⚡ " + stats.Title
 	}
 
 	// Check cache for unlistened episodes count

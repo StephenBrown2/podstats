@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -32,12 +33,13 @@ type Body struct {
 }
 
 type Outline struct {
-	Text     string    `xml:"text,attr"`
-	Title    string    `xml:"title,attr"`
-	Type     string    `xml:"type,attr"`
-	XMLURL   string    `xml:"xmlUrl,attr"`
-	HTMLURL  string    `xml:"htmlUrl,attr"`
-	Outlines []Outline `xml:"outline"`
+	Text      string    `xml:"text,attr"`
+	Title     string    `xml:"title,attr"`
+	SortTitle string    `xml:"-"`
+	Type      string    `xml:"type,attr"`
+	XMLURL    string    `xml:"xmlUrl,attr"`
+	HTMLURL   string    `xml:"htmlUrl,attr"`
+	Outlines  []Outline `xml:"outline"`
 }
 
 // RSS/Atom feed structures.
@@ -98,6 +100,7 @@ type ValueRecipient struct {
 // Statistics structure.
 type PodcastStats struct {
 	Title                string
+	SortTitle            string
 	URL                  string
 	UnlistenedEpisodes   int
 	AvgEpisodeLengthMins float64
@@ -220,23 +223,44 @@ func main() {
 		return
 	}
 
+	// Check for backup command
+	if len(os.Args) >= 2 && os.Args[1] == "--backup" {
+		handleBackupCommand()
+		return
+	}
+
 	// Original CLI mode
-	if len(os.Args) < 2 || len(os.Args) > 4 {
+	if len(os.Args) < 2 || len(os.Args) > 3 {
 		fmt.Println("Usage:")
 		fmt.Println("  podstats --tui                                          # Run TUI mode")
-		fmt.Println("  podstats [--cached[=all|speed|unlistened]] <opml_file> # Run CLI mode")
+		fmt.Println("  podstats [--cached[=all|speed|unlistened]] <opml_file> # Analyze OPML file")
+		fmt.Println("  podstats [--cached[=all|speed|unlistened]] <backup_file> # Analyze and update backup file")
+		fmt.Println("  podstats --backup <command> [args...]                  # Backup operations")
+		fmt.Println("")
+		fmt.Println("File Types:")
+		fmt.Println("  OPML files (.opml): Analyze podcasts and display results")
+		fmt.Println("  Backup files (.backup): Analyze and update podcast priorities in backup zip")
+		fmt.Println("")
+		fmt.Println("Backup commands:")
+		fmt.Println("  podstats --backup stats <backup_file>                  # Show podcast stats from backup")
+		fmt.Println("  podstats --backup update <backup_file> <feed_url> <priority> # Update podcast priority")
 		os.Exit(1)
 	}
 
 	var useCachedSpeed bool
 	var useCachedUnlistened bool
-	var opmlFile string
+	var inputFile string
+	var isBackupFile bool
 
-	if len(os.Args) >= 3 && strings.HasPrefix(os.Args[1], "--cached") {
+	// Parse arguments
+	args := os.Args[1:]
+
+	// Check for --cached parameter
+	if len(args) > 0 && strings.HasPrefix(args[0], "--cached") {
 		// Parse the cached parameter
 		cachedParam := "all" // default
-		if strings.Contains(os.Args[1], "=") {
-			parts := strings.Split(os.Args[1], "=")
+		if strings.Contains(args[0], "=") {
+			parts := strings.Split(args[0], "=")
 			if len(parts) == 2 {
 				cachedParam = parts[1]
 			}
@@ -254,13 +278,37 @@ func main() {
 			useCachedUnlistened = true
 		default:
 			fmt.Printf("Invalid cached parameter: %s. Valid options: all, speed, unlistened\n", cachedParam)
-			fmt.Println("Usage: podstats [--cached[=all|speed|unlistened]] <opml_file>")
+			fmt.Println("Usage: podstats [--cached[=all|speed|unlistened]] <opml_file|backup_file>")
 			os.Exit(1)
 		}
 
-		opmlFile = os.Args[2]
+		args = args[1:] // Remove the --cached flag from args
+	}
+
+	// The next argument should be the input file
+	if len(args) == 0 {
+		fmt.Println("Error: Input file required (OPML or backup file)")
+		os.Exit(1)
+	}
+	inputFile = args[0]
+
+	// Determine file type based on extension
+	lowerInputFile := strings.ToLower(inputFile)
+	if strings.HasSuffix(lowerInputFile, ".backup.zip") || strings.HasSuffix(lowerInputFile, ".backup") {
+		isBackupFile = true
+		fmt.Printf("Detected backup file: %s\n", inputFile)
+	} else if strings.HasSuffix(lowerInputFile, ".opml") {
+		isBackupFile = false
+		fmt.Printf("Detected OPML file: %s\n", inputFile)
 	} else {
-		opmlFile = os.Args[1]
+		fmt.Printf("Warning: Unrecognized file extension, treating as OPML file: %s\n", inputFile)
+		isBackupFile = false
+	}
+
+	if len(args) > 1 {
+		fmt.Printf("Unknown arguments: %v\n", args[1:])
+		fmt.Println("Usage: podstats [--cached[=all|speed|unlistened]] <opml_file|backup_file>")
+		os.Exit(1)
 	}
 
 	cacheFile := "cache.json"
@@ -268,18 +316,32 @@ func main() {
 	// Load cache
 	cache := loadCache(cacheFile)
 
-	// Parse OPML file
-	fmt.Printf("Parsing OPML file: %s\n", opmlFile)
-	podcasts, err := parseOPML(opmlFile)
-	if err != nil {
-		log.Fatalf("Error parsing OPML: %v", err)
+	var allStats []PodcastStats
+	var podcasts []Outline
+
+	if isBackupFile {
+		// Extract podcasts from backup file first
+		fmt.Printf("Extracting podcast list from backup file: %s\n", inputFile)
+		var err error
+		podcasts, err = extractPodcastsFromBackup(inputFile)
+		if err != nil {
+			log.Fatalf("Error extracting podcasts from backup: %v", err)
+		}
+		fmt.Printf("Found %d podcasts in backup file\n", len(podcasts))
+	} else {
+		// Parse OPML file
+		fmt.Printf("Parsing OPML file: %s\n", inputFile)
+		var err error
+		podcasts, err = parseOPML(inputFile)
+		if err != nil {
+			log.Fatalf("Error parsing OPML: %v", err)
+		}
+		fmt.Printf("Found %d podcasts in OPML file\n", len(podcasts))
 	}
 
-	fmt.Printf("Found %d podcasts in OPML file\n", len(podcasts))
 	fmt.Printf("Cache file: %s\n\n", cacheFile)
 
 	// Analyze each podcast
-	var allStats []PodcastStats
 	for i, podcast := range podcasts {
 		// Get the display title (fallback to text if title is empty)
 		displayTitle := podcast.Title
@@ -314,6 +376,242 @@ func main() {
 	// Generate and display histogram
 	fmt.Printf("=== PODCAST STATISTICS HISTOGRAM ===\n\n")
 	displayHistogram(allStats)
+
+	// Update backup file if this was a backup file
+	if isBackupFile {
+		fmt.Printf("\n=== UPDATING BACKUP FILE ===\n\n")
+		updateBackupWithAnalysis(inputFile, allStats)
+	}
+}
+
+func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
+	// Create backup manager to read podcast feed URLs
+	bm, err := NewBackupManager(backupFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open backup file: %w", err)
+	}
+	defer bm.Close()
+
+	if err := bm.ExtractDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to extract database: %w", err)
+	}
+
+	if err := bm.OpenDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	ctx := context.Background()
+	backupStats, err := bm.GetPodcastStats(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
+	}
+
+	// Convert backup stats to Outline format for analysis
+	var podcasts []Outline
+	for _, stat := range backupStats {
+		podcast := Outline{
+			Title:  stat.Name,
+			XMLURL: stat.FeedUrl,
+			Text:   stat.Name, // fallback
+		}
+		podcasts = append(podcasts, podcast)
+	}
+
+	return podcasts, nil
+}
+
+func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
+	fmt.Printf("Reading backup file: %s\n", backupFile)
+
+	// Create backup manager to read current priorities
+	bm, err := NewBackupManager(backupFile)
+	if err != nil {
+		fmt.Printf("Error: Failed to open backup file: %v\n", err)
+		return
+	}
+	defer bm.Close()
+
+	if err := bm.ExtractDatabase(); err != nil {
+		fmt.Printf("Error: Failed to extract database: %v\n", err)
+		return
+	}
+
+	if err := bm.OpenDatabase(); err != nil {
+		fmt.Printf("Error: Failed to open database: %v\n", err)
+		return
+	}
+
+	ctx := context.Background()
+	backupStats, err := bm.GetPodcastStats(ctx)
+	if err != nil {
+		fmt.Printf("Error: Failed to get podcast stats from backup: %v\n", err)
+		return
+	}
+
+	// Create a map of feed URLs to current priorities from backup
+	currentPriorities := make(map[string]int64)
+	for _, stat := range backupStats {
+		currentPriorities[stat.FeedUrl] = stat.Priority
+	}
+
+	// Calculate new priorities based on composite scores
+	// Lower composite scores get higher priorities (lower scores are better)
+	priorityUpdates := make(map[string]int64)
+
+	// Sort by composite score (ascending - better scores first)
+	sort.Slice(allStats, func(i, j int) bool {
+		return allStats[i].CompositeScore < allStats[j].CompositeScore
+	})
+
+	// Assign priorities based on ranking using original priority range (1-10)
+	// Best podcasts (lowest composite scores) get highest priorities
+	maxPriority := int64(10)
+	minPriority := int64(1)
+	for i, stats := range allStats {
+		// Check if this podcast exists in the backup
+		if currentPriority, exists := currentPriorities[stats.URL]; exists {
+			// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
+			priorityRange := maxPriority - minPriority
+			newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
+			if newPriority < minPriority {
+				newPriority = minPriority
+			}
+
+			if newPriority != currentPriority {
+				priorityUpdates[stats.URL] = newPriority
+				fmt.Printf("  %s: %d -> %d (score: %.3f)\n", stats.Title, currentPriority, newPriority, stats.CompositeScore)
+			}
+		}
+	}
+
+	if len(priorityUpdates) == 0 {
+		fmt.Println("No priority updates needed - all podcasts already have optimal priorities")
+		return
+	}
+
+	fmt.Printf("\nUpdating %d podcast priorities...\n", len(priorityUpdates))
+
+	// Apply the updates
+	if err := UpdateBackupPriorities(backupFile, priorityUpdates); err != nil {
+		fmt.Printf("Error: Failed to update backup priorities: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Successfully updated backup file with new priorities!\n")
+}
+
+func handleBackupCommand() {
+	if len(os.Args) < 3 {
+		fmt.Println("Backup command required. Available commands:")
+		fmt.Println("  stats <backup_file>                     # Show podcast stats from backup")
+		fmt.Println("  update <backup_file> <feed_url> <priority> # Update podcast priority")
+		os.Exit(1)
+	}
+
+	subcommand := os.Args[2]
+
+	switch subcommand {
+	case "stats":
+		if len(os.Args) != 4 {
+			fmt.Println("Usage: podstats --backup stats <backup_file>")
+			os.Exit(1)
+		}
+		showBackupStats(os.Args[3])
+
+	case "update":
+		if len(os.Args) != 6 {
+			fmt.Println("Usage: podstats --backup update <backup_file> <feed_url> <priority>")
+			os.Exit(1)
+		}
+
+		backupFile := os.Args[3]
+		feedURL := os.Args[4]
+		priority, err := strconv.ParseInt(os.Args[5], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid priority value: %s\n", os.Args[5])
+			os.Exit(1)
+		}
+
+		updateBackupPriority(backupFile, feedURL, priority)
+
+	default:
+		fmt.Printf("Unknown backup command: %s\n", subcommand)
+		fmt.Println("Available commands: stats, update")
+		os.Exit(1)
+	}
+}
+
+func showBackupStats(backupFile string) {
+	bm, err := NewBackupManager(backupFile)
+	if err != nil {
+		log.Fatalf("Failed to create backup manager: %v", err)
+	}
+	defer bm.Close()
+
+	if err := bm.ExtractDatabase(); err != nil {
+		log.Fatalf("Failed to extract database: %v", err)
+	}
+
+	if err := bm.OpenDatabase(); err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+
+	ctx := context.Background()
+	stats, err := bm.GetPodcastStats(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get podcast stats: %v", err)
+	}
+
+	fmt.Printf("Found %d subscribed podcasts in backup:\n\n", len(stats))
+
+	for _, stat := range stats {
+		author := "Unknown"
+		if stat.Author.Valid {
+			author = stat.Author.String
+		}
+
+		avgDuration := "Unknown"
+		if stat.AverageDuration.Valid {
+			mins := stat.AverageDuration.Int64 / 1000 / 60 // Convert ms to minutes
+			avgDuration = fmt.Sprintf("%d mins", mins)
+		}
+
+		frequency := "Unknown"
+		if stat.Frequency.Valid {
+			frequency = fmt.Sprintf("%d days", stat.Frequency.Int64)
+		}
+
+		fmt.Printf("Name: %s\n", stat.Name)
+		fmt.Printf("  Author: %s\n", author)
+		fmt.Printf("  Feed URL: %s\n", stat.FeedUrl)
+		fmt.Printf("  Unlistened: %d episodes\n", stat.UnplayedEpisodes)
+		fmt.Printf("  Average Duration: %s\n", avgDuration)
+		fmt.Printf("  Frequency: %s\n", frequency)
+		fmt.Printf("  Priority: %d\n", stat.Priority)
+		fmt.Println()
+	}
+}
+
+func updateBackupPriority(backupFile, feedURL string, priority int64) {
+	priorityUpdates := map[string]int64{
+		feedURL: priority,
+	}
+
+	if err := UpdateBackupPriorities(backupFile, priorityUpdates); err != nil {
+		log.Fatalf("Failed to update backup: %v", err)
+	}
+
+	fmt.Printf("Successfully updated priority for %s to %d\n", feedURL, priority)
+}
+
+func trimArticles(title string) string {
+	// Clean up title by removing common articles
+	sortTitle := strings.TrimSpace(title)
+	sortTitle = strings.ReplaceAll(sortTitle, "&amp;", "&") // Clean up title
+	for _, article := range []string{"A", "An", "The", "This"} {
+		sortTitle = strings.TrimPrefix(strings.ToLower(sortTitle), strings.ToLower(article)) // Remove common prefix
+	}
+	return strings.TrimSpace(sortTitle) // Final trim
 }
 
 // parseOPML reads and parses an OPML file, extracting podcast feed URLs.
@@ -336,6 +634,9 @@ func parseOPML(filename string) ([]Outline, error) {
 
 	var podcasts []Outline
 	extractOutlines(opml.Body.Outlines, &podcasts)
+	for i := range podcasts {
+		podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
+	}
 	return podcasts, nil
 }
 
@@ -507,7 +808,7 @@ func calculateDaysSinceLatest(dates []time.Time) float64 {
 
 // calculateCompositeScore creates a single score from all metrics.
 func calculateCompositeScore(stats PodcastStats) float64 {
-	return float64(stats.UnlistenedEpisodes)*stats.AvgEpisodeLengthMins + stats.AvgDaysBetween + stats.DaysSinceLatest
+	return float64(stats.UnlistenedEpisodes)*stats.AvgEpisodeLengthMins - stats.AvgDaysBetween - stats.DaysSinceLatest
 }
 
 // displayHistogram creates and displays a histogram of composite scores.
@@ -604,6 +905,7 @@ func displayHistogram(allStats []PodcastStats) {
 	// Create a slice to hold podcast info with bucket numbers
 	type PodcastRanking struct {
 		Title                string
+		SortTitle            string
 		Bucket               int
 		UnlistenedEpisodes   int
 		AvgEpisodeLengthMins float64
@@ -632,6 +934,7 @@ func displayHistogram(allStats []PodcastStats) {
 
 		rankings = append(rankings, PodcastRanking{
 			Title:                title,
+			SortTitle:            stats.SortTitle,
 			Bucket:               bucketNumber,
 			UnlistenedEpisodes:   stats.UnlistenedEpisodes,
 			AvgEpisodeLengthMins: stats.AvgEpisodeLengthMins,

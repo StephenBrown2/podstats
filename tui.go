@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -25,23 +26,26 @@ const (
 	resultsScreen
 	histogramScreen
 	podcastDetailScreen
+	backupUpdateScreen
 )
 
 // Main TUI model.
 type tuiModel struct {
-	screen          screen
-	filePicker      filepicker.Model
-	configModel     configModel
-	processingModel processingModel
-	resultsModel    resultsModel
-	histogramModel  histogramModel
-	detailModel     detailModel
-	cache           *CacheData
-	cacheFile       string
-	opmlFile        string
-	width           int
-	height          int
-	err             error
+	screen            screen
+	filePicker        filepicker.Model
+	configModel       configModel
+	processingModel   processingModel
+	resultsModel      resultsModel
+	histogramModel    histogramModel
+	detailModel       detailModel
+	backupUpdateModel backupUpdateModel
+	cache             *CacheData
+	cacheFile         string
+	opmlFile          string
+	isBackupFile      bool
+	width             int
+	height            int
+	err               error
 }
 
 // Config screen model for cache options.
@@ -98,6 +102,17 @@ type detailModel struct {
 	focused int
 }
 
+// Backup update screen model.
+type backupUpdateModel struct {
+	priorityUpdates map[string]int64
+	updatedCount    int
+	totalCount      int
+	updating        bool
+	complete        bool
+	success         bool
+	errorMsg        string
+}
+
 // Messages.
 type podcastProcessedMsg struct {
 	stats    PodcastStats
@@ -113,6 +128,13 @@ type processingSetupMsg struct {
 
 type processingCompleteMsg struct {
 	stats []PodcastStats
+}
+
+type backupUpdateStartMsg struct{}
+
+type backupUpdateCompleteMsg struct {
+	success bool
+	error   string
 }
 
 type errorMsg struct {
@@ -153,7 +175,7 @@ var (
 func NewTUI() *tuiModel {
 	// Initialize file picker
 	fp := filepicker.New()
-	fp.AllowedTypes = []string{".opml"}
+	fp.AllowedTypes = []string{".opml", ".zip", ".backup"}
 	fp.CurrentDirectory, _ = os.Getwd()
 
 	// Initialize config model
@@ -286,6 +308,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resultsModel.list.Styles.Title = titleStyle
 
 		m.screen = resultsScreen
+
+	case backupUpdateStartMsg:
+		// Initialize backup update model and switch to backup update screen
+		m.backupUpdateModel = backupUpdateModel{
+			updating: false,
+			complete: false,
+		}
+		m.screen = backupUpdateScreen
 	}
 
 	// Handle screen-specific updates
@@ -296,6 +326,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if didSelect, path := m.filePicker.DidSelectFile(msg); didSelect {
 			m.opmlFile = path
+			// Check if this is a backup file
+			lowerPath := strings.ToLower(path)
+			m.isBackupFile = strings.HasSuffix(lowerPath, ".backup.zip") || strings.HasSuffix(lowerPath, ".backup")
 			m.screen = configScreen
 		}
 
@@ -330,6 +363,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case podcastDetailScreen:
 		cmd = m.updateDetailScreen(msg)
+		cmds = append(cmds, cmd)
+
+	case backupUpdateScreen:
+		cmd = m.updateBackupUpdateScreen(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -385,7 +422,7 @@ func (m *tuiModel) sortAndUpdateResults() {
 	case sortByName:
 		// Sort alphabetically by title
 		sort.Slice(stats, func(i, j int) bool {
-			return strings.ToLower(stats[i].Title) < strings.ToLower(stats[j].Title)
+			return stats[i].SortTitle < stats[j].SortTitle
 		})
 	case sortByPriorityAsc:
 		// Sort by priority ascending (bucket 1, 2, 3... 10), then by name
@@ -396,7 +433,7 @@ func (m *tuiModel) sortAndUpdateResults() {
 				return bucket1 < bucket2
 			}
 			// Secondary sort by name within same priority
-			return strings.ToLower(stats[i].Title) < strings.ToLower(stats[j].Title)
+			return stats[i].SortTitle < stats[j].SortTitle
 		})
 	case sortByPriorityDesc:
 		// Sort by priority descending (bucket 10, 9, 8... 1), then by name
@@ -407,7 +444,7 @@ func (m *tuiModel) sortAndUpdateResults() {
 				return bucket1 > bucket2
 			}
 			// Secondary sort by name within same priority
-			return strings.ToLower(stats[i].Title) < strings.ToLower(stats[j].Title)
+			return stats[i].SortTitle < stats[j].SortTitle
 		})
 	}
 
@@ -517,6 +554,11 @@ func (m *tuiModel) updateResultsScreen(msg tea.Msg) tea.Cmd {
 			// Sort by priority (descending)
 			m.resultsModel.sortMode = sortByPriorityDesc
 			m.sortAndUpdateResults()
+		case "u":
+			// Update backup file (only available for backup files)
+			if m.isBackupFile {
+				return m.prepareBackupUpdate()
+			}
 		}
 	}
 
@@ -724,6 +766,8 @@ func (m *tuiModel) View() string {
 		return m.histogramView()
 	case podcastDetailScreen:
 		return m.detailView()
+	case backupUpdateScreen:
+		return m.backupUpdateView()
 	}
 	return ""
 }
@@ -733,7 +777,7 @@ func (m *tuiModel) fileSelectView() string {
 
 	s.WriteString(titleStyle.Render("🎧 PodStats TUI"))
 	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render("Select an OPML file to analyze your podcasts"))
+	s.WriteString(subtitleStyle.Render("Select an OPML file or PodcastAddict backup file to analyze"))
 	s.WriteString("\n\n")
 	s.WriteString(m.filePicker.View())
 	s.WriteString("\n\n")
@@ -836,7 +880,15 @@ func (m *tuiModel) resultsView() string {
 
 	s.WriteString(m.resultsModel.list.View())
 	s.WriteString("\n💡 ")
-	s.WriteString(lipgloss.NewStyle().Italic(true).Render("↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | p priority↑ | P priority↓ | Esc file | q quit"))
+
+	// Show different help text based on file type
+	var helpText string
+	if m.isBackupFile {
+		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | p priority↑ | P priority↓ | u update-backup | Esc file | q quit"
+	} else {
+		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | p priority↑ | P priority↓ | Esc file | q quit"
+	}
+	s.WriteString(lipgloss.NewStyle().Italic(true).Render(helpText))
 
 	return s.String()
 }
@@ -1007,8 +1059,17 @@ func runTUI() {
 
 func (m *tuiModel) startProcessing() tea.Cmd {
 	return tea.Cmd(func() tea.Msg {
-		// Parse OPML file
-		podcasts, err := parseOPML(m.opmlFile)
+		var podcasts []Outline
+		var err error
+
+		if m.isBackupFile {
+			// Extract podcasts from backup file
+			podcasts, err = extractPodcastsFromBackup(m.opmlFile)
+		} else {
+			// Parse OPML file
+			podcasts, err = parseOPML(m.opmlFile)
+		}
+
 		if err != nil {
 			return errorMsg{err}
 		}
@@ -1051,4 +1112,205 @@ func (m *tuiModel) processNextPodcast() tea.Cmd {
 			hasError: false,
 		}
 	})
+}
+
+// prepareBackupUpdate calculates priority updates and switches to backup update screen.
+func (m *tuiModel) prepareBackupUpdate() tea.Cmd {
+	return tea.Cmd(func() tea.Msg {
+		// Create backup manager to read current priorities
+		bm, err := NewBackupManager(m.opmlFile)
+		if err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open backup file: %v", err)}
+		}
+		defer bm.Close()
+
+		if err := bm.ExtractDatabase(); err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to extract database: %v", err)}
+		}
+
+		if err := bm.OpenDatabase(); err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open database: %v", err)}
+		}
+
+		ctx := context.Background()
+		backupStats, err := bm.GetPodcastStats(ctx)
+		if err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to get podcast stats: %v", err)}
+		}
+
+		// Create a map of feed URLs to current priorities from backup
+		currentPriorities := make(map[string]int64)
+		for _, stat := range backupStats {
+			currentPriorities[stat.FeedUrl] = stat.Priority
+		}
+
+		// Calculate new priorities based on composite scores
+		priorityUpdates := make(map[string]int64)
+
+		// Sort by composite score (ascending - better scores first)
+		allStats := make([]PodcastStats, len(m.resultsModel.stats))
+		copy(allStats, m.resultsModel.stats)
+		sort.Slice(allStats, func(i, j int) bool {
+			return allStats[i].CompositeScore < allStats[j].CompositeScore
+		})
+
+		// Assign priorities based on ranking using original priority range (1-11)
+		maxPriority := int64(11)
+		minPriority := int64(1)
+		for i, stats := range allStats {
+			// Check if this podcast exists in the backup
+			if currentPriority, exists := currentPriorities[stats.URL]; exists {
+				// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
+				priorityRange := maxPriority - minPriority
+				newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
+				if newPriority < minPriority {
+					newPriority = minPriority
+				}
+
+				if newPriority != currentPriority {
+					priorityUpdates[stats.URL] = newPriority
+				}
+			}
+		}
+
+		return backupUpdateStartMsg{}
+	})
+}
+
+// updateBackupUpdateScreen handles the backup update screen.
+func (m *tuiModel) updateBackupUpdateScreen(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "y", "Y":
+			if !m.backupUpdateModel.updating && !m.backupUpdateModel.complete {
+				m.backupUpdateModel.updating = true
+				return m.performBackupUpdate()
+			}
+		case "n", "N", "esc":
+			if !m.backupUpdateModel.updating {
+				m.screen = resultsScreen
+				return nil
+			}
+		case "enter":
+			if m.backupUpdateModel.complete {
+				m.screen = resultsScreen
+				return nil
+			}
+		}
+	case backupUpdateCompleteMsg:
+		m.backupUpdateModel.updating = false
+		m.backupUpdateModel.complete = true
+		m.backupUpdateModel.success = msg.success
+		if !msg.success {
+			m.backupUpdateModel.errorMsg = msg.error
+		}
+	}
+	return nil
+}
+
+// performBackupUpdate actually performs the backup update.
+func (m *tuiModel) performBackupUpdate() tea.Cmd {
+	return tea.Cmd(func() tea.Msg {
+		// Calculate priority updates (same logic as prepareBackupUpdate but actually apply them)
+		bm, err := NewBackupManager(m.opmlFile)
+		if err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open backup file: %v", err)}
+		}
+		defer bm.Close()
+
+		if err := bm.ExtractDatabase(); err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to extract database: %v", err)}
+		}
+
+		if err := bm.OpenDatabase(); err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open database: %v", err)}
+		}
+
+		ctx := context.Background()
+		backupStats, err := bm.GetPodcastStats(ctx)
+		if err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to get podcast stats: %v", err)}
+		}
+
+		// Create a map of feed URLs to current priorities from backup
+		currentPriorities := make(map[string]int64)
+		for _, stat := range backupStats {
+			currentPriorities[stat.FeedUrl] = stat.Priority
+		}
+
+		// Calculate new priorities based on composite scores
+		priorityUpdates := make(map[string]int64)
+
+		// Sort by composite score (ascending - better scores first)
+		allStats := make([]PodcastStats, len(m.resultsModel.stats))
+		copy(allStats, m.resultsModel.stats)
+		sort.Slice(allStats, func(i, j int) bool {
+			return allStats[i].CompositeScore < allStats[j].CompositeScore
+		})
+
+		// Assign priorities based on ranking using original priority range (1-11)
+		maxPriority := int64(11)
+		minPriority := int64(1)
+		for i, stats := range allStats {
+			// Check if this podcast exists in the backup
+			if currentPriority, exists := currentPriorities[stats.URL]; exists {
+				// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
+				priorityRange := maxPriority - minPriority
+				newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
+				if newPriority < minPriority {
+					newPriority = minPriority
+				}
+
+				if newPriority != currentPriority {
+					priorityUpdates[stats.URL] = newPriority
+				}
+			}
+		}
+
+		if len(priorityUpdates) == 0 {
+			return backupUpdateCompleteMsg{success: true, error: "No priority updates needed - all podcasts already have optimal priorities"}
+		}
+
+		// Apply the updates
+		if err := UpdateBackupPriorities(m.opmlFile, priorityUpdates); err != nil {
+			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to update backup priorities: %v", err)}
+		}
+
+		return backupUpdateCompleteMsg{success: true, error: fmt.Sprintf("Successfully updated %d podcast priorities!", len(priorityUpdates))}
+	})
+}
+
+// backupUpdateView renders the backup update confirmation screen.
+func (m *tuiModel) backupUpdateView() string {
+	var s strings.Builder
+
+	s.WriteString(titleStyle.Render("🔄 Update Backup Priorities"))
+	s.WriteString("\n\n")
+
+	if !m.backupUpdateModel.updating && !m.backupUpdateModel.complete {
+		s.WriteString("This will update the podcast priorities in your backup file based on the analysis results.\n")
+		s.WriteString("Podcasts with better composite scores (more manageable) will get higher priorities.\n\n")
+		s.WriteString("⚠️  This will modify your backup file. Do you want to continue?\n\n")
+		s.WriteString(buttonStyle.Render("Y") + " Yes  " + buttonStyle.Render("N") + " No")
+		s.WriteString("\n\n💡 ")
+		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Y to continue, N or Esc to cancel"))
+	} else if m.backupUpdateModel.updating {
+		s.WriteString("🔄 Updating backup file...")
+		s.WriteString("\n\nPlease wait while priorities are calculated and applied...")
+	} else if m.backupUpdateModel.complete {
+		if m.backupUpdateModel.success {
+			s.WriteString(successStyle.Render("✅ Backup Update Complete!"))
+			s.WriteString("\n\n")
+			s.WriteString(m.backupUpdateModel.errorMsg) // This contains the success message
+		} else {
+			s.WriteString(errorStyle.Render("❌ Backup Update Failed"))
+			s.WriteString("\n\n")
+			s.WriteString(fmt.Sprintf("Error: %s", m.backupUpdateModel.errorMsg))
+		}
+		s.WriteString("\n\n💡 ")
+		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press Enter to continue"))
+	}
+
+	return s.String()
 }

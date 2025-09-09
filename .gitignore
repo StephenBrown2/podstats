@@ -1,2 +1,5 @@
+*.backup
 *.opml
 *.txt
+cache.json
+podstats
