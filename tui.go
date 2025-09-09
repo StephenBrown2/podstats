@@ -925,9 +925,7 @@ func (m *tuiModel) tagSelectView() string {
 	s.WriteString(titleStyle.Render("🏷️  Tag Selection"))
 	s.WriteString("\n")
 	s.WriteString(subtitleStyle.Render(fmt.Sprintf("File: %s", m.opmlFile)))
-	s.WriteString("\n\n")
-
-	s.WriteString("Select a tag to filter podcasts:\n\n")
+	s.WriteString("\n")
 
 	if len(m.tagSelectModel.tags) == 0 {
 		s.WriteString("Loading tags...")

@@ -10,6 +10,43 @@ import (
 	"database/sql"
 )
 
+const getAllPodcasts = `-- name: GetAllPodcasts :many
+SELECT _id AS id, name AS title, feed_url 
+FROM podcasts 
+WHERE subscribed_status IS TRUE
+ORDER BY name ASC
+`
+
+type GetAllPodcastsRow struct {
+	ID      int64
+	Title   string
+	FeedUrl string
+}
+
+// Get all subscribed podcasts with their basic information
+func (q *Queries) GetAllPodcasts(ctx context.Context) ([]GetAllPodcastsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getAllPodcasts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAllPodcastsRow
+	for rows.Next() {
+		var i GetAllPodcastsRow
+		if err := rows.Scan(&i.ID, &i.Title, &i.FeedUrl); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getPodcastStats = `-- name: GetPodcastStats :many
 SELECT p.name,
     p.author,

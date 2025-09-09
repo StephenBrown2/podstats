@@ -245,6 +245,7 @@ func main() {
 		fmt.Println("")
 		fmt.Println("Backup commands:")
 		fmt.Println("  podstats --backup stats <backup_file>                  # Show podcast stats from backup")
+		fmt.Println("  podstats --backup speeds <backup_file>                 # Show podcast speed settings from backup")
 		fmt.Println("  podstats --backup update <backup_file> <feed_url> <priority> # Update podcast priority")
 		os.Exit(1)
 	}
@@ -535,6 +536,7 @@ func handleBackupCommand() {
 	if len(os.Args) < 3 {
 		fmt.Println("Backup command required. Available commands:")
 		fmt.Println("  stats <backup_file>                     # Show podcast stats from backup")
+		fmt.Println("  speeds <backup_file>                    # Show podcast speed settings from backup")
 		fmt.Println("  update <backup_file> <feed_url> <priority> # Update podcast priority")
 		os.Exit(1)
 	}
@@ -548,6 +550,13 @@ func handleBackupCommand() {
 			os.Exit(1)
 		}
 		showBackupStats(os.Args[3])
+
+	case "speeds":
+		if len(os.Args) != 4 {
+			fmt.Println("Usage: podstats --backup speeds <backup_file>")
+			os.Exit(1)
+		}
+		showBackupSpeeds(os.Args[3])
 
 	case "update":
 		if len(os.Args) != 6 {
@@ -567,7 +576,7 @@ func handleBackupCommand() {
 
 	default:
 		fmt.Printf("Unknown backup command: %s\n", subcommand)
-		fmt.Println("Available commands: stats, update")
+		fmt.Println("Available commands: stats, speeds, update")
 		os.Exit(1)
 	}
 }
@@ -620,6 +629,54 @@ func showBackupStats(backupFile string) {
 			displayPodcastStat(stat.Name, stat.Author, stat.FeedUrl, stat.UnplayedEpisodes, stat.AverageDuration, stat.Frequency, stat.Priority)
 		}
 	}
+}
+
+func showBackupSpeeds(backupFile string) {
+	bm, err := NewBackupManager(backupFile)
+	if err != nil {
+		log.Fatalf("Failed to create backup manager: %v", err)
+	}
+	defer bm.Close()
+
+	if err := bm.ExtractDatabase(); err != nil {
+		log.Fatalf("Failed to extract database: %v", err)
+	}
+
+	if err := bm.OpenDatabase(); err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+
+	ctx := context.Background()
+	speedSettings, defaultSpeed, err := bm.GetPodcastSpeedSettings(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get podcast speed settings: %v", err)
+	}
+
+	fmt.Printf("Podcast Speed Settings (found %d podcasts, default speed: %.1fx):\n\n", len(speedSettings), defaultSpeed)
+
+	// Create a table for better display
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		Headers("Podcast Name", "Speed Enabled", "Speed Multiplier").
+		StyleFunc(func(row, col int) lipgloss.Style {
+			return lipgloss.NewStyle().Padding(0, 1)
+		})
+
+	for _, setting := range speedSettings {
+		speedEnabledText := "No"
+		if setting.SpeedEnabled {
+			speedEnabledText = "Yes"
+		}
+
+		speedText := fmt.Sprintf("%.1fx", setting.SpeedMultiplier)
+		if !setting.SpeedEnabled {
+			speedText = fmt.Sprintf("%.1fx (default)", defaultSpeed)
+		}
+
+		t.Row(setting.PodcastName, speedEnabledText, speedText)
+	}
+
+	fmt.Println(t.Render())
 }
 
 func updateBackupPriority(backupFile, feedURL string, priority int64) {

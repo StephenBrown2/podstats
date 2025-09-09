@@ -4,10 +4,13 @@ import (
 	"archive/zip"
 	"context"
 	"database/sql"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +27,27 @@ type BackupManager struct {
 	originalZip *zip.ReadCloser
 	db          *sql.DB
 	dbQueries   *podcastaddict.Queries
+}
+
+// PreferencesMap represents the Android preferences XML structure
+type PreferencesMap struct {
+	XMLName xml.Name              `xml:"map"`
+	Entries []PreferencesMapEntry `xml:",any"`
+}
+
+// PreferencesMapEntry represents individual preference entries
+type PreferencesMapEntry struct {
+	XMLName xml.Name
+	Name    string `xml:"name,attr"`
+	Value   string `xml:"value,attr"`
+	Text    string `xml:",chardata"`
+}
+
+// PodcastSpeedSettings represents speed settings for a podcast
+type PodcastSpeedSettings struct {
+	PodcastID       int64
+	SpeedEnabled    bool
+	SpeedMultiplier float64
 }
 
 // NewBackupManager creates a new backup manager for the given backup file.
@@ -86,6 +110,186 @@ func (bm *BackupManager) ExtractDatabase() error {
 	}
 
 	return nil
+}
+
+// ExtractPreferences extracts the preferences XML file from the backup zip file.
+func (bm *BackupManager) ExtractPreferences() (string, error) {
+	if bm.originalZip == nil {
+		return "", fmt.Errorf("backup zip not opened - call ExtractDatabase first")
+	}
+
+	// Find the preferences file
+	var prefsFile *zip.File
+	for _, f := range bm.originalZip.File {
+		if strings.Contains(f.Name, "preferences.xml") {
+			prefsFile = f
+			break
+		}
+	}
+
+	if prefsFile == nil {
+		return "", fmt.Errorf("preferences.xml not found in backup zip")
+	}
+
+	// Extract the preferences file
+	rc, err := prefsFile.Open()
+	if err != nil {
+		return "", fmt.Errorf("failed to open preferences file in zip: %w", err)
+	}
+	defer rc.Close()
+
+	// Create the preferences file in temp directory
+	prefsPath := filepath.Join(bm.extractDir, "preferences.xml")
+	outFile, err := os.Create(prefsPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create preferences file: %w", err)
+	}
+	defer outFile.Close()
+
+	// Copy the preferences content
+	_, err = io.Copy(outFile, rc)
+	if err != nil {
+		return "", fmt.Errorf("failed to copy preferences content: %w", err)
+	}
+
+	return prefsPath, nil
+}
+
+// ParsePodcastSpeedSettings parses the preferences XML and extracts podcast speed settings.
+func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSettings, float64, error) {
+	// Extract preferences if not already done
+	prefsPath, err := bm.ExtractPreferences()
+	if err != nil {
+		return nil, 1.0, fmt.Errorf("failed to extract preferences: %w", err)
+	}
+
+	// Read the preferences file
+	file, err := os.Open(prefsPath)
+	if err != nil {
+		return nil, 1.0, fmt.Errorf("failed to open preferences file: %w", err)
+	}
+	defer file.Close()
+
+	// Parse XML
+	var prefs PreferencesMap
+	decoder := xml.NewDecoder(file)
+	if err := decoder.Decode(&prefs); err != nil {
+		return nil, 1.0, fmt.Errorf("failed to parse preferences XML: %w", err)
+	}
+
+	// Extract speed settings
+	speedSettings := make(map[int64]*PodcastSpeedSettings)
+	speedEnabledRegex := regexp.MustCompile(`^pref_speedPlaybackOn_(-?\d+)$`)
+	speedAdjustmentRegex := regexp.MustCompile(`^pref_speedAdjustment_(-?\d+)$`)
+	defaultSpeed := 1.0
+
+	for _, entry := range prefs.Entries {
+		// Check for global default speed setting
+		if entry.Name == "pref_speedAdjustment" {
+			if speed, err := strconv.ParseFloat(entry.Value, 64); err == nil {
+				defaultSpeed = speed
+			}
+			continue
+		}
+
+		// Check for speed enabled settings
+		if matches := speedEnabledRegex.FindStringSubmatch(entry.Name); matches != nil {
+			podcastID, err := strconv.ParseInt(matches[1], 10, 64)
+			if err != nil {
+				continue // Skip invalid IDs
+			}
+
+			// Initialize settings if not exists
+			if speedSettings[podcastID] == nil {
+				speedSettings[podcastID] = &PodcastSpeedSettings{
+					PodcastID:       podcastID,
+					SpeedMultiplier: defaultSpeed, // Use default speed
+				}
+			}
+
+			speedSettings[podcastID].SpeedEnabled = entry.Value == "true"
+		}
+
+		// Check for speed adjustment settings
+		if matches := speedAdjustmentRegex.FindStringSubmatch(entry.Name); matches != nil {
+			podcastID, err := strconv.ParseInt(matches[1], 10, 64)
+			if err != nil {
+				continue // Skip invalid IDs
+			}
+
+			// Initialize settings if not exists
+			if speedSettings[podcastID] == nil {
+				speedSettings[podcastID] = &PodcastSpeedSettings{
+					PodcastID:    podcastID,
+					SpeedEnabled: false, // Default disabled
+				}
+			}
+
+			// Parse speed multiplier
+			if speed, err := strconv.ParseFloat(entry.Value, 64); err == nil {
+				speedSettings[podcastID].SpeedMultiplier = speed
+			}
+		}
+	}
+
+	return speedSettings, defaultSpeed, nil
+}
+
+// GetPodcastSpeedSettings returns speed settings for all podcasts with their names.
+func (bm *BackupManager) GetPodcastSpeedSettings(ctx context.Context) ([]struct {
+	PodcastID       int64
+	PodcastName     string
+	SpeedEnabled    bool
+	SpeedMultiplier float64
+}, float64, error,
+) {
+	if bm.dbQueries == nil {
+		return nil, 1.0, fmt.Errorf("database not opened - call OpenDatabase first")
+	}
+
+	// Parse speed settings from preferences
+	speedSettings, defaultSpeed, err := bm.ParsePodcastSpeedSettings()
+	if err != nil {
+		return nil, 1.0, fmt.Errorf("failed to parse speed settings: %w", err)
+	}
+
+	// Get all podcasts from database
+	podcasts, err := bm.dbQueries.GetAllPodcasts(ctx)
+	if err != nil {
+		return nil, 1.0, fmt.Errorf("failed to get podcasts from database: %w", err)
+	}
+
+	// Combine podcast data with speed settings
+	var results []struct {
+		PodcastID       int64
+		PodcastName     string
+		SpeedEnabled    bool
+		SpeedMultiplier float64
+	}
+
+	for _, podcast := range podcasts {
+		result := struct {
+			PodcastID       int64
+			PodcastName     string
+			SpeedEnabled    bool
+			SpeedMultiplier float64
+		}{
+			PodcastID:       podcast.ID,
+			PodcastName:     podcast.Title,
+			SpeedEnabled:    false,
+			SpeedMultiplier: defaultSpeed, // Use parsed default speed
+		}
+
+		// Check if there are speed settings for this podcast
+		if settings, exists := speedSettings[podcast.ID]; exists {
+			result.SpeedEnabled = settings.SpeedEnabled
+			result.SpeedMultiplier = settings.SpeedMultiplier
+		}
+
+		results = append(results, result)
+	}
+
+	return results, defaultSpeed, nil
 }
 
 // OpenDatabase opens the extracted database and initializes queries.

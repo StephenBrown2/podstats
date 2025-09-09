@@ -4,6 +4,13 @@ UPDATE podcasts
 SET priority = ?
 WHERE feed_url = ?;
 
+-- name: GetAllPodcasts :many
+-- Get all subscribed podcasts with their basic information
+SELECT _id AS id, name AS title, feed_url 
+FROM podcasts 
+WHERE subscribed_status IS TRUE
+ORDER BY name ASC;
+
 -- name: GetPodcastStats :many
 -- Retrieve podcast statistics including unlistened episode count
 SELECT p.name,
