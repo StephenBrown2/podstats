@@ -12,7 +12,7 @@ import (
 )
 
 // TUI-compatible version of analyzePodcast that doesn't require user input.
-func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, useCachedSpeed bool) (PodcastStats, error) {
+func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, useCachedSpeed bool, speedSettings map[string]float64, defaultSpeed float64) (PodcastStats, error) {
 	stats := PodcastStats{
 		Title: podcast.Title,
 		URL:   podcast.XMLURL,
@@ -89,15 +89,21 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, u
 	}
 
 	// Handle playback speed
-	playbackSpeed := 2.0
+	playbackSpeed := defaultSpeed // Use provided default speed instead of hardcoded 2.0
 	if cachedSpeed, found := getCachedPlaybackSpeed(cache, podcast.XMLURL); found && useCachedSpeed {
 		playbackSpeed = cachedSpeed
 	} else if cachedSpeed, found := getCachedPlaybackSpeed(cache, podcast.XMLURL); found {
 		// If not using cached but cache exists, use it
 		playbackSpeed = cachedSpeed
+	} else if speedSettings != nil {
+		// Use speed from backup settings if available
+		if backupSpeed, found := speedSettings[podcast.XMLURL]; found {
+			playbackSpeed = backupSpeed
+		}
+		// Note: don't update cache with backup speed as it's more authoritative
 	} else {
-		// Use default and update cache
-		playbackSpeed = 2.0
+		// Fallback to default and update cache
+		playbackSpeed = defaultSpeed
 		updateCacheWithPlaybackSpeed(cache, podcast.XMLURL, unlistenedCount, playbackSpeed)
 	}
 

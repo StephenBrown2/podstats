@@ -45,6 +45,8 @@ type tuiModel struct {
 	cacheFile         string
 	opmlFile          string
 	isBackupFile      bool
+	speedSettings     map[string]float64 // Feed URL -> speed multiplier
+	defaultSpeed      float64            // Default speed from backup
 	width             int
 	height            int
 	err               error
@@ -152,6 +154,11 @@ type tagsLoadedMsg struct {
 	tags []string
 }
 
+type speedSettingsLoadedMsg struct {
+	speedSettings map[string]float64
+	defaultSpeed  float64
+}
+
 type processingCompleteMsg struct {
 	stats []PodcastStats
 }
@@ -239,6 +246,7 @@ func NewTUI() *tuiModel {
 		detailModel:     detailModel{},
 		cache:           loadCache("cache.json"),
 		cacheFile:       "cache.json",
+		defaultSpeed:    2.0, // Default speed for OPML files
 	}
 }
 
@@ -309,6 +317,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tagSelectModel.list = list.New(items, delegate, m.width, m.height-8)
 		m.tagSelectModel.list.Title = "🏷️  Select Tag Filter"
 		m.tagSelectModel.list.Styles.Title = titleStyle
+
+	case speedSettingsLoadedMsg:
+		// Store speed settings for use during processing
+		m.speedSettings = msg.speedSettings
+		m.defaultSpeed = msg.defaultSpeed
 
 	case processingSetupMsg:
 		m.processingModel.podcasts = msg.podcasts
@@ -531,7 +544,7 @@ func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
 			// For backup files, go to tag selection screen
 			if m.isBackupFile {
 				m.screen = tagSelectScreen
-				return m.loadTags()
+				return tea.Batch(m.loadTags(), m.loadSpeedSettings())
 			} else {
 				// For OPML files, go directly to processing
 				m.screen = processingScreen
@@ -1226,6 +1239,34 @@ func (m *tuiModel) loadTags() tea.Cmd {
 	})
 }
 
+func (m *tuiModel) loadSpeedSettings() tea.Cmd {
+	return tea.Cmd(func() tea.Msg {
+		backupManager, err := NewBackupManager(m.opmlFile)
+		if err != nil {
+			return errorMsg{err}
+		}
+		defer backupManager.Close()
+
+		if err := backupManager.ExtractDatabase(); err != nil {
+			return errorMsg{err}
+		}
+
+		if err := backupManager.OpenDatabase(); err != nil {
+			return errorMsg{err}
+		}
+
+		speedSettings, defaultSpeed, err := backupManager.GetPodcastSpeedSettingsByURL(context.Background())
+		if err != nil {
+			return errorMsg{err}
+		}
+
+		return speedSettingsLoadedMsg{
+			speedSettings: speedSettings,
+			defaultSpeed:  defaultSpeed,
+		}
+	})
+}
+
 // extractPodcastsFromBackupWithTag extracts podcasts from backup filtered by tag
 func extractPodcastsFromBackupWithTag(backupFile string, tag string) ([]Outline, error) {
 	bm, err := NewBackupManager(backupFile)
@@ -1293,7 +1334,9 @@ func (m *tuiModel) processNextPodcast() tea.Cmd {
 		podcast := m.processingModel.podcasts[m.processingModel.current]
 		stats, err := analyzePodcastTUI(podcast, m.cache,
 			m.configModel.options.useCachedUnlistened,
-			m.configModel.options.useCachedSpeed)
+			m.configModel.options.useCachedSpeed,
+			m.speedSettings,
+			m.defaultSpeed)
 		if err != nil {
 			// Skip errored podcasts but continue processing
 			return podcastProcessedMsg{

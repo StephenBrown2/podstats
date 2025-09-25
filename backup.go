@@ -241,8 +241,7 @@ func (bm *BackupManager) GetPodcastSpeedSettings(ctx context.Context) ([]struct 
 	PodcastName     string
 	SpeedEnabled    bool
 	SpeedMultiplier float64
-}, float64, error,
-) {
+}, float64, error) {
 	if bm.dbQueries == nil {
 		return nil, 1.0, fmt.Errorf("database not opened - call OpenDatabase first")
 	}
@@ -290,6 +289,40 @@ func (bm *BackupManager) GetPodcastSpeedSettings(ctx context.Context) ([]struct 
 	}
 
 	return results, defaultSpeed, nil
+}
+
+// GetPodcastSpeedSettingsByURL returns a map of feed URLs to speed settings for easier lookup.
+func (bm *BackupManager) GetPodcastSpeedSettingsByURL(ctx context.Context) (map[string]float64, float64, error) {
+	speedSettings, defaultSpeed, err := bm.GetPodcastSpeedSettings(ctx)
+	if err != nil {
+		return nil, defaultSpeed, err
+	}
+
+	// Get all podcasts to map IDs to feed URLs
+	podcasts, err := bm.dbQueries.GetAllPodcasts(ctx)
+	if err != nil {
+		return nil, defaultSpeed, fmt.Errorf("failed to get podcasts from database: %w", err)
+	}
+
+	// Create a map from podcast ID to feed URL
+	idToURL := make(map[int64]string)
+	for _, podcast := range podcasts {
+		idToURL[podcast.ID] = podcast.FeedUrl
+	}
+
+	// Create the result map from feed URL to speed
+	urlToSpeed := make(map[string]float64)
+	for _, setting := range speedSettings {
+		if feedURL, exists := idToURL[setting.PodcastID]; exists {
+			if setting.SpeedEnabled {
+				urlToSpeed[feedURL] = setting.SpeedMultiplier
+			} else {
+				urlToSpeed[feedURL] = defaultSpeed
+			}
+		}
+	}
+
+	return urlToSpeed, defaultSpeed, nil
 }
 
 // OpenDatabase opens the extracted database and initializes queries.
