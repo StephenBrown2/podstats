@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss/v2"
 	"github.com/charmbracelet/lipgloss/v2/table"
@@ -123,6 +124,9 @@ type PodcastCache struct {
 type CacheData struct {
 	Podcasts []PodcastCache `json:"podcasts"`
 }
+
+// Common leading articles to ignore/dim when sorting or displaying titles.
+var leadingArticles = []string{"A", "An", "The", "This", "Ye"}
 
 // loadCache loads the cache from the cache file.
 func loadCache(cacheFile string) *CacheData {
@@ -352,7 +356,7 @@ func main() {
 			displayTitle = podcast.Text
 		}
 		displayTitle = strings.ReplaceAll(displayTitle, "&amp;", "&") // Clean up title
-		fmt.Printf("[%d/%d] Analyzing: %s\n", i+1, len(podcasts), displayTitle)
+		fmt.Printf("[%d/%d] Analyzing: %s\n", i+1, len(podcasts), dimArticleInTitle(displayTitle))
 		fmt.Printf("  URL: %s\n", podcast.XMLURL)
 
 		stats, err := analyzePodcastCLI(podcast, cache, useCachedUnlistened, useCachedSpeed)
@@ -511,7 +515,7 @@ func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
 
 			if newPriority != currentPriority {
 				priorityUpdates[stats.URL] = newPriority
-				fmt.Printf("  %s: %d -> %d (score: %.3f)\n", stats.Title, currentPriority, newPriority, stats.CompositeScore)
+				fmt.Printf("  %s: %d -> %d (score: %.3f)\n", dimArticleInTitle(stats.Title), currentPriority, newPriority, stats.CompositeScore)
 			}
 		}
 	}
@@ -673,7 +677,7 @@ func showBackupSpeeds(backupFile string) {
 			speedText = fmt.Sprintf("%.1fx (default)", defaultSpeed)
 		}
 
-		t.Row(setting.PodcastName, speedEnabledText, speedText)
+		t.Row(dimArticleInTitle(setting.PodcastName), speedEnabledText, speedText)
 	}
 
 	fmt.Println(t.Render())
@@ -717,6 +721,54 @@ func colorDaysSince(days float64, includeDays bool) string {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Render(val)
 	}
+}
+
+// dimArticleInTitle returns the title with a leading article dimmed for display purposes.
+func dimArticleInTitle(title string) string {
+	// Normalize basic entities and trim outer spaces
+	cleaned := strings.TrimSpace(strings.ReplaceAll(title, "&amp;", "&"))
+	if cleaned == "" {
+		return cleaned
+	}
+
+	// Separate leading symbolic prefix (emojis, punctuation) that should remain untouched
+	prefixEnd := 0
+	for i, r := range cleaned {
+		// Stop at first letter (A-Z or a-z) to attempt article detection
+		if unicode.IsLetter(r) {
+			prefixEnd = i
+			break
+		}
+		// Continue accumulating prefix (emoji / punctuation / spaces)
+		prefixEnd = i + len(string(r))
+	}
+
+	prefix := cleaned[:prefixEnd]
+	remainder := cleaned[prefixEnd:]
+	remainder = strings.TrimLeft(remainder, " ") // Remove any space after prefix for article matching
+
+	if remainder == "" {
+		return cleaned // Nothing to process
+	}
+
+	// Check common English articles (case-insensitive) followed by a space
+	for _, art := range leadingArticles {
+		n := len(art)
+		if len(remainder) > n && strings.EqualFold(remainder[:n], art) && remainder[n] == ' ' {
+			articlePart := remainder[:n]
+			rest := strings.TrimSpace(remainder[n:])
+			faintArticle := lipgloss.NewStyle().Faint(true).Render(articlePart)
+			// Reconstruct: prefix (with its original spacing) + faint article + space + rest
+			out := strings.TrimRight(prefix, " ")
+			if out != "" {
+				out += " "
+			}
+			return out + faintArticle + " " + rest
+		}
+	}
+
+	// No article detected; return original cleaned title
+	return cleaned
 }
 
 // parseOPML reads and parses an OPML file, extracting podcast feed URLs.
@@ -1082,7 +1134,7 @@ func displayHistogram(allStats []PodcastStats) {
 		}
 		tbl.Row(
 			fmt.Sprintf("%2d", ranking.Bucket),
-			ranking.Title,
+			dimArticleInTitle(ranking.Title),
 			fmt.Sprintf("%d", ranking.UnlistenedEpisodes),
 			fmt.Sprintf("%.1fx", ranking.PlaybackSpeed),
 			fmt.Sprintf("%.1f mins", ranking.AvgEpisodeLengthMins),
@@ -1158,7 +1210,7 @@ func displayPodcastStat(name string, author sql.NullString, feedUrl string, unpl
 		frequencyStr = fmt.Sprintf("%d days", frequency.Int64)
 	}
 
-	fmt.Printf("Name: %s\n", name)
+	fmt.Printf("Name: %s\n", dimArticleInTitle(name))
 	fmt.Printf("  Author: %s\n", authorStr)
 	fmt.Printf("  Feed URL: %s\n", feedUrl)
 	fmt.Printf("  Unlistened: %d episodes\n", unplayedEpisodes)

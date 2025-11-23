@@ -1105,7 +1105,7 @@ func (m *tuiModel) detailView() string {
 
 	s.WriteString(titleStyle.Render("🎙️  Podcast Details"))
 	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render(m.detailModel.podcast.Title))
+	s.WriteString(subtitleStyle.Render(dimArticleInTitle(m.detailModel.podcast.Title)))
 	s.WriteString("\n\n")
 
 	labels := []string{
@@ -1153,7 +1153,7 @@ func (i podcastItem) FilterValue() string {
 }
 
 func (i podcastItem) Title() string {
-	return i.PodcastStats.Title
+	return dimArticleInTitle(i.PodcastStats.Title)
 }
 
 func (i podcastItem) Description() string {
