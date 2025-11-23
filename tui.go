@@ -1126,7 +1126,9 @@ func (m *tuiModel) detailView() string {
 	s.WriteString("📈 Current Stats:\n")
 	s.WriteString(fmt.Sprintf("  ⏱️  Avg Length: %.1f minutes (speed-adjusted)\n", m.detailModel.podcast.AvgEpisodeLengthMins))
 	s.WriteString(fmt.Sprintf("  📅 Avg Days Between: %.1f\n", m.detailModel.podcast.AvgDaysBetween))
-	s.WriteString(fmt.Sprintf("  📆 Days Since Latest: %.1f\n", m.detailModel.podcast.DaysSinceLatest))
+	s.WriteString("  📆 Days Since Latest: ")
+	s.WriteString(colorDaysSince(m.detailModel.podcast.DaysSinceLatest, false))
+	s.WriteString("\n")
 	s.WriteString(fmt.Sprintf("  🎯 Composite Score: %.2f\n", m.detailModel.podcast.CompositeScore))
 
 	s.WriteString("\n\n💡 ")

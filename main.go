@@ -365,7 +365,7 @@ func main() {
 		fmt.Printf("  Playback speed: %.1fx\n", stats.PlaybackSpeed)
 		fmt.Printf("  Avg length: %.1f minutes (adjusted for playback speed)\n", stats.AvgEpisodeLengthMins)
 		fmt.Printf("  Avg days between: %.1f\n", stats.AvgDaysBetween)
-		fmt.Printf("  Days since latest: %.1f\n", stats.DaysSinceLatest)
+		fmt.Printf("  Days since latest: %s\n", colorDaysSince(stats.DaysSinceLatest, false))
 		fmt.Printf("  Composite score: %.2f\n\n", stats.CompositeScore)
 
 		allStats = append(allStats, stats)
@@ -699,6 +699,24 @@ func trimArticles(title string) string {
 		sortTitle = strings.TrimPrefix(strings.ToLower(sortTitle), strings.ToLower(article)) // Remove common prefix
 	}
 	return strings.TrimSpace(sortTitle) // Final trim
+}
+
+// colorDaysSince returns a colorized string for days-since-latest buckets.
+func colorDaysSince(days float64, includeDays bool) string {
+	val := fmt.Sprintf("%.0f days", days)
+	if !includeDays {
+		val = fmt.Sprintf("%.0f", days)
+	}
+	switch {
+	case days < 100:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render(val)
+	case days < 200:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Render(val)
+	case days < 300:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8800")).Render(val)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Render(val)
+	}
 }
 
 // parseOPML reads and parses an OPML file, extracting podcast feed URLs.
@@ -1069,7 +1087,7 @@ func displayHistogram(allStats []PodcastStats) {
 			fmt.Sprintf("%.1fx", ranking.PlaybackSpeed),
 			fmt.Sprintf("%.1f mins", ranking.AvgEpisodeLengthMins),
 			fmt.Sprintf("%.0f days", ranking.AvgDaysBetween),
-			fmt.Sprintf("%.0f days", ranking.DaysSinceLatest),
+			colorDaysSince(ranking.DaysSinceLatest, true),
 		)
 		lastRanking = ranking.Bucket // Capture the last ranking for display
 	}
