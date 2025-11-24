@@ -1,10 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -485,35 +486,36 @@ func (m *tuiModel) sortAndUpdateResults() {
 	switch m.resultsModel.sortMode {
 	case sortByScore:
 		// Sort by composite score descending (highest scores first)
-		sort.Slice(stats, func(i, j int) bool {
-			return stats[i].CompositeScore > stats[j].CompositeScore
+		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
+			return cmp.Compare(b.CompositeScore, a.CompositeScore)
 		})
 	case sortByName:
 		// Sort alphabetically by title
-		sort.Slice(stats, func(i, j int) bool {
-			return stats[i].SortTitle < stats[j].SortTitle
+		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
+			return strings.Compare(a.SortTitle, b.SortTitle)
 		})
 	case sortByPriorityAsc:
 		// Sort by priority ascending (bucket 1, 2, 3... 10), then by name
-		sort.Slice(stats, func(i, j int) bool {
-			bucket1 := m.calculateBucketNumber(stats[i].CompositeScore)
-			bucket2 := m.calculateBucketNumber(stats[j].CompositeScore)
-			if bucket1 != bucket2 {
-				return bucket1 < bucket2
+		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
+			bucketA := m.calculateBucketNumber(a.CompositeScore)
+			bucketB := m.calculateBucketNumber(b.CompositeScore)
+
+			if bucketA == bucketB {
+				// Secondary sort by name within same priority
+				return strings.Compare(a.SortTitle, b.SortTitle)
 			}
-			// Secondary sort by name within same priority
-			return stats[i].SortTitle < stats[j].SortTitle
+			return cmp.Compare(bucketA, bucketB)
 		})
 	case sortByPriorityDesc:
 		// Sort by priority descending (bucket 10, 9, 8... 1), then by name
-		sort.Slice(stats, func(i, j int) bool {
-			bucket1 := m.calculateBucketNumber(stats[i].CompositeScore)
-			bucket2 := m.calculateBucketNumber(stats[j].CompositeScore)
-			if bucket1 != bucket2 {
-				return bucket1 > bucket2
+		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
+			bucketA := m.calculateBucketNumber(a.CompositeScore)
+			bucketB := m.calculateBucketNumber(b.CompositeScore)
+			if bucketA == bucketB {
+				// Secondary sort by name within same priority
+				return strings.Compare(a.SortTitle, b.SortTitle)
 			}
-			// Secondary sort by name within same priority
-			return stats[i].SortTitle < stats[j].SortTitle
+			return cmp.Compare(bucketB, bucketA)
 		})
 	}
 
@@ -1395,8 +1397,8 @@ func (m *tuiModel) prepareBackupUpdate() tea.Cmd {
 		// Sort by composite score (ascending - better scores first)
 		allStats := make([]PodcastStats, len(m.resultsModel.stats))
 		copy(allStats, m.resultsModel.stats)
-		sort.Slice(allStats, func(i, j int) bool {
-			return allStats[i].CompositeScore < allStats[j].CompositeScore
+		slices.SortStableFunc(allStats, func(a, b PodcastStats) int {
+			return cmp.Compare(a.CompositeScore, b.CompositeScore)
 		})
 
 		// Assign priorities based on ranking using original priority range (1-11)
@@ -1490,8 +1492,8 @@ func (m *tuiModel) performBackupUpdate() tea.Cmd {
 		// Sort by composite score (ascending - better scores first)
 		allStats := make([]PodcastStats, len(m.resultsModel.stats))
 		copy(allStats, m.resultsModel.stats)
-		sort.Slice(allStats, func(i, j int) bool {
-			return allStats[i].CompositeScore < allStats[j].CompositeScore
+		slices.SortStableFunc(allStats, func(a, b PodcastStats) int {
+			return cmp.Compare(a.CompositeScore, b.CompositeScore)
 		})
 
 		// Assign priorities based on ranking using original priority range (1-11)

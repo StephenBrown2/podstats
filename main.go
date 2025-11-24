@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,12 +11,14 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/StephenBrown2/podstats/podcastaddict"
 	"github.com/charmbracelet/lipgloss/v2"
 	"github.com/charmbracelet/lipgloss/v2/table"
 )
@@ -348,6 +351,23 @@ func main() {
 
 	fmt.Printf("Cache file: %s\n\n", cacheFile)
 
+	// Ensure podcasts are processed in trimmed-name order (ignoring articles)
+	if len(podcasts) > 0 {
+		// Populate SortTitle defensively and sort
+		for i := range podcasts {
+			if podcasts[i].SortTitle == "" {
+				title := podcasts[i].Title
+				if title == "" {
+					title = podcasts[i].Text
+				}
+				podcasts[i].SortTitle = trimArticles(title)
+			}
+		}
+		slices.SortStableFunc(podcasts, func(a, b Outline) int {
+			return strings.Compare(a.SortTitle, b.SortTitle)
+		})
+	}
+
 	// Analyze each podcast
 	for i, podcast := range podcasts {
 		// Get the display title (fallback to text if title is empty)
@@ -433,6 +453,10 @@ func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
 			}
 			podcasts = append(podcasts, podcast)
 		}
+		// Ensure SortTitle is populated using trimArticles for consistent sorting
+		for i := range podcasts {
+			podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
+		}
 		return podcasts, nil
 	} else {
 		// Filter by selected tag
@@ -451,6 +475,10 @@ func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
 				Text:   stat.Name, // fallback
 			}
 			podcasts = append(podcasts, podcast)
+		}
+		// Ensure SortTitle is populated using trimArticles for consistent sorting
+		for i := range podcasts {
+			podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
 		}
 		return podcasts, nil
 	}
@@ -495,8 +523,8 @@ func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
 	priorityUpdates := make(map[string]int64)
 
 	// Sort by composite score (ascending - better scores first)
-	sort.Slice(allStats, func(i, j int) bool {
-		return allStats[i].CompositeScore < allStats[j].CompositeScore
+	slices.SortStableFunc(allStats, func(a, b PodcastStats) int {
+		return cmp.Compare(a.CompositeScore, b.CompositeScore)
 	})
 
 	// Assign priorities based on ranking using original priority range (1-10)
@@ -615,6 +643,11 @@ func showBackupStats(backupFile string) {
 			log.Fatalf("Failed to get podcast stats: %v", err)
 		}
 
+		// Sort by trimmed title for readability
+		slices.SortStableFunc(stats, func(a, b podcastaddict.GetPodcastStatsRow) int {
+			return strings.Compare(trimArticles(a.Name), trimArticles(b.Name))
+		})
+
 		fmt.Printf("Found %d subscribed podcasts in backup:\n\n", len(stats))
 
 		for _, stat := range stats {
@@ -626,6 +659,11 @@ func showBackupStats(backupFile string) {
 		if err != nil {
 			log.Fatalf("Failed to get podcast stats by tag: %v", err)
 		}
+
+		// Sort by trimmed title for readability
+		slices.SortStableFunc(stats, func(a, b podcastaddict.GetPodcastStatsByTagRow) int {
+			return strings.Compare(trimArticles(a.Name), trimArticles(b.Name))
+		})
 
 		fmt.Printf("Found %d podcasts with tag '%s':\n\n", len(stats), selectedTag)
 
@@ -655,6 +693,11 @@ func showBackupSpeeds(backupFile string) {
 	if err != nil {
 		log.Fatalf("Failed to get podcast speed settings: %v", err)
 	}
+
+	// Sort by trimmed podcast name for consistent display
+	sort.Slice(speedSettings, func(i, j int) bool {
+		return trimArticles(speedSettings[i].PodcastName) < trimArticles(speedSettings[j].PodcastName)
+	})
 
 	fmt.Printf("Podcast Speed Settings (found %d podcasts, default speed: %.1fx):\n\n", len(speedSettings), defaultSpeed)
 
@@ -699,7 +742,7 @@ func trimArticles(title string) string {
 	// Clean up title by removing common articles
 	sortTitle := strings.TrimSpace(title)
 	sortTitle = strings.ReplaceAll(sortTitle, "&amp;", "&") // Clean up title
-	for _, article := range []string{"A", "An", "The", "This"} {
+	for _, article := range leadingArticles {
 		sortTitle = strings.TrimPrefix(strings.ToLower(sortTitle), strings.ToLower(article)) // Remove common prefix
 	}
 	return strings.TrimSpace(sortTitle) // Final trim
@@ -1102,12 +1145,21 @@ func displayHistogram(allStats []PodcastStats) {
 		})
 	}
 
-	// Sort by bucket (descending) then by title (ascending)
-	sort.Slice(rankings, func(i, j int) bool {
-		if rankings[i].Bucket == rankings[j].Bucket {
-			return rankings[i].Title < rankings[j].Title
+	// Sort by bucket (descending) then by title (ascending), using trimmed articles
+	slices.SortStableFunc(rankings, func(a, b PodcastRanking) int {
+		if a.Bucket == b.Bucket {
+			ti := a.SortTitle
+			tj := b.SortTitle
+			if ti == "" { // Fallback for safety
+				ti = trimArticles(a.Title)
+			}
+			if tj == "" {
+				tj = trimArticles(b.Title)
+			}
+			return strings.Compare(ti, tj)
 		}
-		return rankings[i].Bucket > rankings[j].Bucket
+		// Descending bucket: higher bucket first
+		return cmp.Compare(b.Bucket, a.Bucket)
 	})
 
 	// Create a table for better display

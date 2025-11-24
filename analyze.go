@@ -115,6 +115,12 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, u
 	stats.DaysSinceLatest = calculateDaysSinceLatest(dates)
 	stats.CompositeScore = calculateCompositeScore(stats)
 
+	// Ensure SortTitle is populated for consistent sorting downstream
+	stats.SortTitle = podcast.SortTitle
+	if stats.SortTitle == "" {
+		stats.SortTitle = trimArticles(stats.Title)
+	}
+
 	return stats, nil
 }
 
