@@ -65,7 +65,7 @@ func analyzePodcastTUI(podcast Outline, cache *CacheData, useCachedUnlistened, u
 
 	// Update title with lightning bolt if podcast supports value-for-value
 	if hasValue && !strings.HasPrefix(stats.Title, "⚡") {
-		stats.Title = "⚡" + stats.Title
+		stats.Title = "⚡ " + stats.Title
 	}
 
 	// Handle unlistened episodes count

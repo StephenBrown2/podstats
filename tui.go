@@ -9,12 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/v2/filepicker"
-	"github.com/charmbracelet/bubbles/v2/list"
-	"github.com/charmbracelet/bubbles/v2/progress"
-	"github.com/charmbracelet/bubbles/v2/textinput"
-	tea "github.com/charmbracelet/bubbletea/v2"
-	"github.com/charmbracelet/lipgloss/v2"
+	"charm.land/bubbles/v2/filepicker"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // Screen types.
@@ -69,6 +70,7 @@ type tagSelectModel struct {
 	tags        []string
 	selectedTag string
 	showAllTags bool
+	spinner     spinner.Model
 }
 
 // Tag item for list display
@@ -136,6 +138,7 @@ type backupUpdateModel struct {
 	complete        bool
 	success         bool
 	errorMsg        string
+	spinner         spinner.Model
 }
 
 // Messages.
@@ -227,7 +230,7 @@ func NewTUI() *tuiModel {
 
 	// Initialize processing model
 	proc := processingModel{
-		progress: progress.New(progress.WithDefaultGradient()),
+		progress: progress.New(progress.WithDefaultBlend()),
 	}
 	proc.progress.SetWidth(80) // Set default width
 
@@ -237,10 +240,17 @@ func NewTUI() *tuiModel {
 	// Initialize empty histogram model
 	histogram := histogramModel{}
 
+	// Initialize tag selection model with spinner
+	tagSelect := tagSelectModel{
+		spinner: spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+	}
+	// tagSelect.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
 	return &tuiModel{
 		screen:          fileSelectScreen,
 		filePicker:      fp,
 		configModel:     config,
+		tagSelectModel:  tagSelect,
 		processingModel: proc,
 		resultsModel:    results,
 		histogramModel:  histogram,
@@ -380,7 +390,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.backupUpdateModel = backupUpdateModel{
 			updating: false,
 			complete: false,
+			spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		}
+		// m.backupUpdateModel.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 		m.screen = backupUpdateScreen
 	}
 
@@ -546,7 +558,8 @@ func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
 			// For backup files, go to tag selection screen
 			if m.isBackupFile {
 				m.screen = tagSelectScreen
-				return tea.Batch(m.loadTags(), m.loadSpeedSettings())
+				// Start spinner while loading tags and speeds
+				return tea.Batch(m.loadTags(), m.loadSpeedSettings(), m.tagSelectModel.spinner.Tick)
 			} else {
 				// For OPML files, go directly to processing
 				m.screen = processingScreen
@@ -595,6 +608,10 @@ func (m *tuiModel) updateTagSelectScreen(msg tea.Msg) tea.Cmd {
 		switch msg.String() {
 		case "enter":
 			// Get selected tag and proceed to processing
+			if len(m.tagSelectModel.tags) == 0 {
+				// Still loading; ignore Enter until tags are ready
+				return nil
+			}
 			if selected := m.tagSelectModel.list.SelectedItem(); selected != nil {
 				item := selected.(tagItem)
 				if item.isAllOption {
@@ -616,6 +633,11 @@ func (m *tuiModel) updateTagSelectScreen(msg tea.Msg) tea.Cmd {
 	}
 
 	var cmd tea.Cmd
+	if len(m.tagSelectModel.tags) == 0 {
+		// Tags still loading: keep spinner animating
+		m.tagSelectModel.spinner, cmd = m.tagSelectModel.spinner.Update(msg)
+		return cmd
+	}
 	m.tagSelectModel.list, cmd = m.tagSelectModel.list.Update(msg)
 	return cmd
 }
@@ -861,7 +883,7 @@ func (m *tuiModel) saveDetailChanges() error {
 	return saveCache(m.cacheFile, m.cache)
 }
 
-func (m *tuiModel) View() string {
+func (m *tuiModel) View() tea.View {
 	switch m.screen {
 	case fileSelectScreen:
 		return m.fileSelectView()
@@ -880,10 +902,10 @@ func (m *tuiModel) View() string {
 	case backupUpdateScreen:
 		return m.backupUpdateView()
 	}
-	return ""
+	return tea.NewView("")
 }
 
-func (m *tuiModel) fileSelectView() string {
+func (m *tuiModel) fileSelectView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🎧 PodStats TUI"))
@@ -900,10 +922,10 @@ func (m *tuiModel) fileSelectView() string {
 		s.WriteString(errorStyle.Render(fmt.Sprintf("❌ Error: %v", m.err)))
 	}
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) configView() string {
+func (m *tuiModel) configView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("⚙️  Configuration"))
@@ -931,10 +953,10 @@ func (m *tuiModel) configView() string {
 	s.WriteString("💡 ")
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Tab/Shift+Tab to navigate, Enter to start, Esc to go back"))
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) tagSelectView() string {
+func (m *tuiModel) tagSelectView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🏷️  Tag Selection"))
@@ -943,7 +965,8 @@ func (m *tuiModel) tagSelectView() string {
 	s.WriteString("\n")
 
 	if len(m.tagSelectModel.tags) == 0 {
-		s.WriteString("Loading tags...")
+		s.WriteString("🏷 Loading tags")
+		s.WriteString(m.tagSelectModel.spinner.View())
 	} else {
 		s.WriteString(m.tagSelectModel.list.View())
 	}
@@ -951,10 +974,10 @@ func (m *tuiModel) tagSelectView() string {
 	s.WriteString("\n\n💡 ")
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Enter to select, Esc to go back"))
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) processingView() string {
+func (m *tuiModel) processingView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🔄 Processing Podcasts"))
@@ -964,9 +987,10 @@ func (m *tuiModel) processingView() string {
 		s.WriteString(fmt.Sprintf("📡 Analyzing podcast %d of %d\n",
 			m.processingModel.current, m.processingModel.total))
 		if m.processingModel.currentTitle != "" {
+			visibleWidth := m.width - len("🎙️  Current: ")
 			truncatedTitle := m.processingModel.currentTitle
-			if len(truncatedTitle) > 60 {
-				truncatedTitle = truncatedTitle[:57] + "..."
+			if visibleWidth > 3 && len(m.processingModel.currentTitle) > visibleWidth {
+				truncatedTitle = truncatedTitle[:visibleWidth-3] + "..."
 			}
 			s.WriteString(fmt.Sprintf("🎙️  Current: %s\n", truncatedTitle))
 		}
@@ -987,10 +1011,10 @@ func (m *tuiModel) processingView() string {
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press any key to view results"))
 	}
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) resultsView() string {
+func (m *tuiModel) resultsView() tea.View {
 	var s strings.Builder
 
 	// Show current sort mode
@@ -1021,10 +1045,10 @@ func (m *tuiModel) resultsView() string {
 	}
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render(helpText))
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) histogramView() string {
+func (m *tuiModel) histogramView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("📊 Composite Score Histogram"))
@@ -1034,7 +1058,7 @@ func (m *tuiModel) histogramView() string {
 
 	if len(m.histogramModel.stats) == 0 {
 		s.WriteString("No podcast data to display")
-		return s.String()
+		return tea.NewView(s.String())
 	}
 
 	// Display histogram bars
@@ -1099,15 +1123,15 @@ func (m *tuiModel) histogramView() string {
 	s.WriteString("\n\n💡 ")
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press 'r' to return to results"))
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) detailView() string {
+func (m *tuiModel) detailView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🎙️  Podcast Details"))
 	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render(dimArticleInTitle(m.detailModel.podcast.Title)))
+	s.WriteString(subtitleStyle.Render(m.detailModel.podcast.Title))
 	s.WriteString("\n\n")
 
 	labels := []string{
@@ -1141,7 +1165,7 @@ func (m *tuiModel) detailView() string {
 		s.WriteString(errorStyle.Render(fmt.Sprintf("❌ Error: %v", m.err)))
 	}
 
-	return s.String()
+	return tea.NewView(s.String())
 }
 
 // Podcast list item.
@@ -1151,11 +1175,11 @@ type podcastItem struct {
 }
 
 func (i podcastItem) FilterValue() string {
-	return i.PodcastStats.Title
+	return i.PodcastStats.SortTitle
 }
 
 func (i podcastItem) Title() string {
-	return dimArticleInTitle(i.PodcastStats.Title)
+	return i.PodcastStats.Title
 }
 
 func (i podcastItem) Description() string {
@@ -1182,7 +1206,7 @@ func newDetailModel(stats PodcastStats) detailModel {
 
 func runTUI() {
 	m := NewTUI()
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running TUI: %v", err)
@@ -1432,7 +1456,7 @@ func (m *tuiModel) updateBackupUpdateScreen(msg tea.Msg) tea.Cmd {
 		case "y", "Y":
 			if !m.backupUpdateModel.updating && !m.backupUpdateModel.complete {
 				m.backupUpdateModel.updating = true
-				return m.performBackupUpdate()
+				return tea.Batch(m.performBackupUpdate(), m.backupUpdateModel.spinner.Tick)
 			}
 		case "n", "N", "esc":
 			if !m.backupUpdateModel.updating {
@@ -1452,6 +1476,12 @@ func (m *tuiModel) updateBackupUpdateScreen(msg tea.Msg) tea.Cmd {
 		if !msg.success {
 			m.backupUpdateModel.errorMsg = msg.error
 		}
+	}
+	// Animate spinner while updating
+	if m.backupUpdateModel.updating {
+		var cmd tea.Cmd
+		m.backupUpdateModel.spinner, cmd = m.backupUpdateModel.spinner.Update(msg)
+		return cmd
 	}
 	return nil
 }
@@ -1529,7 +1559,7 @@ func (m *tuiModel) performBackupUpdate() tea.Cmd {
 }
 
 // backupUpdateView renders the backup update confirmation screen.
-func (m *tuiModel) backupUpdateView() string {
+func (m *tuiModel) backupUpdateView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🔄 Update Backup Priorities"))
@@ -1543,7 +1573,8 @@ func (m *tuiModel) backupUpdateView() string {
 		s.WriteString("\n\n💡 ")
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Y to continue, N or Esc to cancel"))
 	} else if m.backupUpdateModel.updating {
-		s.WriteString("🔄 Updating backup file...")
+		s.WriteString("🔄 Updating backup file")
+		s.WriteString(m.backupUpdateModel.spinner.View())
 		s.WriteString("\n\nPlease wait while priorities are calculated and applied...")
 	} else if m.backupUpdateModel.complete {
 		if m.backupUpdateModel.success {
@@ -1559,5 +1590,5 @@ func (m *tuiModel) backupUpdateView() string {
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press Enter to continue"))
 	}
 
-	return s.String()
+	return tea.NewView(s.String())
 }

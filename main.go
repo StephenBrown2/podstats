@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode"
 
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/StephenBrown2/podstats/podcastaddict"
-	"github.com/charmbracelet/lipgloss/v2"
-	"github.com/charmbracelet/lipgloss/v2/table"
 )
 
 // OPML structures.
