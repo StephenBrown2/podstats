@@ -15,6 +15,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -32,32 +33,49 @@ const (
 	backupUpdateScreen
 )
 
+const (
+	keyEsc      = "esc"
+	keyEnter    = "enter"
+	keyShiftTab = "shift+tab"
+	yesStr      = "yes"
+)
+
+// UI element height constants for layout calculations.
+const (
+	fileSelectHeaderLines = 3 // title + subtitle + blank line
+	fileSelectFooterLines = 2 // help text line + possible error line
+	configHeaderLines     = 4 // title + file path + 2 blank lines
+	tagSelectFooterLines  = 2 // blank line + help text
+	resultsFooterLines    = 2 // blank line + help text
+	histogramHeaderLines  = 2 // title + blank line
+	histogramFooterLines  = 7 // legend (5 lines) + blank + help
+)
+
 // Main TUI model.
 type tuiModel struct {
-	screen            screen
 	filePicker        filepicker.Model
-	configModel       configModel
-	tagSelectModel    tagSelectModel
-	processingModel   processingModel
-	resultsModel      resultsModel
-	histogramModel    histogramModel
-	detailModel       detailModel
-	backupUpdateModel backupUpdateModel
+	err               error
+	speedSettings     map[string]float64
 	cache             *CacheData
 	cacheFile         string
+	configModel       configModel
 	opmlFile          string
-	isBackupFile      bool
-	speedSettings     map[string]float64 // Feed URL -> speed multiplier
-	defaultSpeed      float64            // Default speed from backup
+	resultsModel      resultsModel
+	histogramModel    histogramModel
+	tagSelectModel    tagSelectModel
+	backupUpdateModel backupUpdateModel
+	processingModel   processingModel
+	detailModel       detailModel
+	screen            screen
+	defaultSpeed      float64
 	width             int
 	height            int
-	err               error
+	isBackupFile      bool
 }
 
 // Config screen model for cache options.
 type configModel struct {
-	inputs  []textinput.Model
-	focused int
+	form    *huh.Form
 	options struct {
 		useCachedSpeed      bool
 		useCachedUnlistened bool
@@ -67,13 +85,13 @@ type configModel struct {
 // Tag selection screen model for backup files.
 type tagSelectModel struct {
 	list        list.Model
-	tags        []string
 	selectedTag string
-	showAllTags bool
+	tags        []string
 	spinner     spinner.Model
+	showAllTags bool
 }
 
-// Tag item for list display
+// Tag item for list display.
 type tagItem struct {
 	name        string
 	isAllOption bool
@@ -81,19 +99,19 @@ type tagItem struct {
 
 func (t tagItem) FilterValue() string { return t.name }
 func (t tagItem) Title() string       { return t.name }
-func (t tagItem) Description() string {
+func (t tagItem) Description() string { //nolint:revive // receiver unused by design for list interface
 	return "" // No description to keep the list compact
 }
 
 // Processing screen model.
 type processingModel struct {
 	progress     progress.Model
+	currentTitle string
+	stats        []PodcastStats
+	podcasts     []Outline
 	current      int
 	total        int
-	currentTitle string
 	finished     bool
-	stats        []PodcastStats
-	podcasts     []Outline // Store podcasts being processed
 }
 
 // Sort modes for results.
@@ -109,7 +127,6 @@ const (
 // Results screen model.
 type resultsModel struct {
 	list     list.Model
-	selected int
 	stats    []PodcastStats
 	sortMode sortMode
 }
@@ -124,30 +141,27 @@ type histogramModel struct {
 
 // Detail screen model for individual podcast.
 type detailModel struct {
-	podcast PodcastStats
 	inputs  []textinput.Model
+	podcast PodcastStats
 	focused int
 }
 
 // Backup update screen model.
 type backupUpdateModel struct {
-	priorityUpdates map[string]int64
-	updatedCount    int
-	totalCount      int
-	updating        bool
-	complete        bool
-	success         bool
-	errorMsg        string
-	spinner         spinner.Model
+	errorMsg string
+	spinner  spinner.Model
+	updating bool
+	complete bool
+	success  bool
 }
 
 // Messages.
 type podcastProcessedMsg struct {
+	error    error
 	stats    PodcastStats
 	index    int
 	total    int
 	hasError bool
-	error    error
 }
 
 type processingSetupMsg struct {
@@ -170,8 +184,8 @@ type processingCompleteMsg struct {
 type backupUpdateStartMsg struct{}
 
 type backupUpdateCompleteMsg struct {
-	success bool
 	error   string
+	success bool
 }
 
 type errorMsg struct {
@@ -182,12 +196,10 @@ type errorMsg struct {
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#7D56F4")).
-			Padding(1, 0)
+			Foreground(lipgloss.Color("#7D56F4"))
 
 	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
-			Padding(0, 0, 1, 0)
+			Foreground(lipgloss.Color("#626262"))
 
 	inputStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -215,18 +227,22 @@ func NewTUI() *tuiModel {
 	fp.AllowedTypes = []string{".opml", ".zip", ".backup"}
 	fp.CurrentDirectory, _ = os.Getwd()
 
-	// Initialize config model
-	configInputs := make([]textinput.Model, 2)
-	configInputs[0] = textinput.New()
-	configInputs[0].Placeholder = "y or n"
-	configInputs[0].Focus()
-	configInputs[1] = textinput.New()
-	configInputs[1].Placeholder = "y or n"
-
-	config := configModel{
-		inputs:  configInputs,
-		focused: 0,
-	}
+	// Initialize config model with huh form
+	config := configModel{}
+	config.options.useCachedSpeed = true
+	config.options.useCachedUnlistened = true
+	config.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Key("useCachedSpeed").
+				Title("🔄 Use cached playback speed values?").
+				Value(&config.options.useCachedSpeed),
+			huh.NewConfirm().
+				Key("useCachedUnlistened").
+				Title("📊 Use cached unlistened episode counts?").
+				Value(&config.options.useCachedUnlistened),
+		),
+	)
 
 	// Initialize processing model
 	proc := processingModel{
@@ -264,19 +280,40 @@ func NewTUI() *tuiModel {
 func (m *tuiModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.filePicker.Init(),
+		m.configModel.form.Init(),
 		textinput.Blink,
 	)
 }
 
+// Update handles TUI state updates and message routing.
+// Central TUI update dispatcher; splitting would harm message flow.
+//
+//nolint:funlen,ireturn,maintidx // Bubble Tea Model interface; central dispatcher
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	var cmds []tea.Cmd
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.processingModel.progress.SetWidth(msg.Width - 4)
+		m.processingModel.progress.SetWidth(max(10, msg.Width-4))
+		// Resize lists to fill available terminal height
+		if m.resultsModel.list.Width() > 0 {
+			listHeight := m.calculateResultsListHeight()
+			m.resultsModel.list.SetSize(m.width, listHeight)
+		}
+
+		if m.tagSelectModel.list.Width() > 0 {
+			listHeight := m.calculateTagSelectListHeight()
+			m.tagSelectModel.list.SetSize(m.width, listHeight)
+		}
+
+		// Also resize the file picker if available
+		filePickerHeight := m.calculateFilePickerHeight()
+		m.filePicker.SetHeight(filePickerHeight)
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -284,7 +321,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen == resultsScreen || m.screen == podcastDetailScreen || m.screen == fileSelectScreen {
 				return m, tea.Quit
 			}
-		case "esc":
+		case keyEsc:
 			switch m.screen {
 			case configScreen:
 				m.screen = fileSelectScreen
@@ -299,6 +336,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// This prevents accidentally exiting the TUI
 			case podcastDetailScreen:
 				m.screen = resultsScreen
+			case fileSelectScreen:
+				// No-op; already at the first screen
+			case backupUpdateScreen:
+				// Esc handling is managed in updateBackupUpdateScreen
 			}
 		}
 
@@ -312,6 +353,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Create list items with "All podcasts" option first
 		items := make([]list.Item, len(msg.tags)+1)
+
 		items[0] = tagItem{name: "All podcasts", isAllOption: true}
 		for i, tag := range msg.tags {
 			items[i+1] = tagItem{name: tag, isAllOption: false}
@@ -325,9 +367,15 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Foreground(lipgloss.Color("#7D56F4")).
 			BorderLeftForeground(lipgloss.Color("#7D56F4"))
 
-		m.tagSelectModel.list = list.New(items, delegate, m.width, m.height-8)
-		m.tagSelectModel.list.Title = "🏷️  Select Tag Filter"
+		// Initialize list with calculated height for available space
+		listHeight := m.calculateTagSelectListHeight()
+		m.tagSelectModel.list = list.New(items, delegate, m.width, listHeight)
+		m.tagSelectModel.list.Title = "🏷️  Tag Selection - " + m.opmlFile
 		m.tagSelectModel.list.Styles.Title = titleStyle
+		m.tagSelectModel.list.SetShowTitle(true)
+		// Hide built-in list help/status to avoid double footer
+		m.tagSelectModel.list.SetShowHelp(false)
+		m.tagSelectModel.list.SetShowStatusBar(false)
 
 	case speedSettingsLoadedMsg:
 		// Store speed settings for use during processing
@@ -339,6 +387,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.processingModel.total = len(msg.podcasts)
 		m.processingModel.current = 0
 		m.processingModel.stats = []PodcastStats{}
+
 		return m, m.processNextPodcast()
 
 	case podcastProcessedMsg:
@@ -372,16 +421,23 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		delegate := list.NewDefaultDelegate()
-		delegate.SetHeight(3)
+		// Make each item more compact to fit more per page
+		delegate.SetHeight(2)
 		delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
 			Foreground(lipgloss.Color("#7D56F4")).
 			BorderLeftForeground(lipgloss.Color("#7D56F4"))
 		delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.
 			Foreground(lipgloss.Color("#626262"))
 
-		m.resultsModel.list = list.New(items, delegate, m.width, m.height-8)
+		// Initialize list with calculated height for available space
+		listHeight := m.calculateResultsListHeight()
+		m.resultsModel.list = list.New(items, delegate, m.width, listHeight)
 		m.resultsModel.list.Title = "🎧 Podcast Rankings"
 		m.resultsModel.list.Styles.Title = titleStyle
+		m.resultsModel.list.SetShowTitle(true)
+		// Hide built-in list help/status to avoid double footer; keep pagination
+		m.resultsModel.list.SetShowHelp(false)
+		m.resultsModel.list.SetShowStatusBar(false)
 
 		m.screen = resultsScreen
 
@@ -423,6 +479,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processingModel.progress = model
 			cmd = c
 		}
+
 		cmds = append(cmds, cmd)
 
 		// Handle any key press when processing is finished
@@ -440,8 +497,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 
 	case histogramScreen:
-		cmd = m.updateHistogramScreen(msg)
-		cmds = append(cmds, cmd)
+		m.updateHistogramScreen(msg)
 
 	case podcastDetailScreen:
 		cmd = m.updateDetailScreen(msg)
@@ -453,434 +509,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-// Helper function to calculate bucket number for a given score.
-func (m *tuiModel) calculateBucketNumber(score float64) int {
-	if len(m.histogramModel.stats) == 0 {
-		return 1
-	}
-
-	// Find min and max scores (same logic as generateHistogram)
-	minScore := m.histogramModel.stats[0].CompositeScore
-	maxScore := m.histogramModel.stats[0].CompositeScore
-	for _, stat := range m.histogramModel.stats {
-		if stat.CompositeScore < minScore {
-			minScore = stat.CompositeScore
-		}
-		if stat.CompositeScore > maxScore {
-			maxScore = stat.CompositeScore
-		}
-	}
-
-	bucketSize := (maxScore - minScore) / 10.0
-	if bucketSize == 0 {
-		bucketSize = 1.0
-	}
-
-	bucketIndex := int((score - minScore) / bucketSize)
-	if bucketIndex >= 10 {
-		bucketIndex = 9
-	}
-	if bucketIndex < 0 {
-		bucketIndex = 0
-	}
-
-	// Convert to display bucket number (reversed)
-	return 10 - bucketIndex
-}
-
-// Sort and update the results list based on current sort mode.
-func (m *tuiModel) sortAndUpdateResults() {
-	stats := make([]PodcastStats, len(m.resultsModel.stats))
-	copy(stats, m.resultsModel.stats)
-
-	switch m.resultsModel.sortMode {
-	case sortByScore:
-		// Sort by composite score descending (highest scores first)
-		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
-			return cmp.Compare(b.CompositeScore, a.CompositeScore)
-		})
-	case sortByName:
-		// Sort alphabetically by title
-		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
-			return strings.Compare(a.SortTitle, b.SortTitle)
-		})
-	case sortByPriorityAsc:
-		// Sort by priority ascending (bucket 1, 2, 3... 10), then by name
-		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
-			bucketA := m.calculateBucketNumber(a.CompositeScore)
-			bucketB := m.calculateBucketNumber(b.CompositeScore)
-
-			if bucketA == bucketB {
-				// Secondary sort by name within same priority
-				return strings.Compare(a.SortTitle, b.SortTitle)
-			}
-			return cmp.Compare(bucketA, bucketB)
-		})
-	case sortByPriorityDesc:
-		// Sort by priority descending (bucket 10, 9, 8... 1), then by name
-		slices.SortStableFunc(stats, func(a, b PodcastStats) int {
-			bucketA := m.calculateBucketNumber(a.CompositeScore)
-			bucketB := m.calculateBucketNumber(b.CompositeScore)
-			if bucketA == bucketB {
-				// Secondary sort by name within same priority
-				return strings.Compare(a.SortTitle, b.SortTitle)
-			}
-			return cmp.Compare(bucketB, bucketA)
-		})
-	}
-
-	m.resultsModel.stats = stats
-
-	// Update the list items
-	items := make([]list.Item, len(stats))
-	for i, stat := range stats {
-		items[i] = podcastItem{stat, m.calculateBucketNumber(stat.CompositeScore)}
-	}
-	m.resultsModel.list.SetItems(items)
-}
-
-func (m *tuiModel) updateConfigScreen(msg tea.Msg) tea.Cmd {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			// Process configuration and start analysis
-			speed := strings.ToLower(m.configModel.inputs[0].Value())
-			unlistened := strings.ToLower(m.configModel.inputs[1].Value())
-
-			m.configModel.options.useCachedSpeed = speed == "y" || speed == "yes"
-			m.configModel.options.useCachedUnlistened = unlistened == "y" || unlistened == "yes"
-
-			// For backup files, go to tag selection screen
-			if m.isBackupFile {
-				m.screen = tagSelectScreen
-				// Start spinner while loading tags and speeds
-				return tea.Batch(m.loadTags(), m.loadSpeedSettings(), m.tagSelectModel.spinner.Tick)
-			} else {
-				// For OPML files, go directly to processing
-				m.screen = processingScreen
-				// Ensure progress bar has proper width
-				if m.width > 0 {
-					m.processingModel.progress.SetWidth(m.width - 4)
-				}
-				return m.startProcessing()
-			}
-
-		case "tab", "shift+tab", "up", "down":
-			if msg.String() == "up" || msg.String() == "shift+tab" {
-				m.configModel.focused--
-			} else {
-				m.configModel.focused++
-			}
-
-			if m.configModel.focused > len(m.configModel.inputs)-1 {
-				m.configModel.focused = 0
-			} else if m.configModel.focused < 0 {
-				m.configModel.focused = len(m.configModel.inputs) - 1
-			}
-
-			for i := range m.configModel.inputs {
-				if i == m.configModel.focused {
-					m.configModel.inputs[i].Focus()
-				} else {
-					m.configModel.inputs[i].Blur()
-				}
-			}
-		}
-	}
-
-	for i := range m.configModel.inputs {
-		var cmd tea.Cmd
-		m.configModel.inputs[i], cmd = m.configModel.inputs[i].Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	return tea.Batch(cmds...)
-}
-
-func (m *tuiModel) updateTagSelectScreen(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			// Get selected tag and proceed to processing
-			if len(m.tagSelectModel.tags) == 0 {
-				// Still loading; ignore Enter until tags are ready
-				return nil
-			}
-			if selected := m.tagSelectModel.list.SelectedItem(); selected != nil {
-				item := selected.(tagItem)
-				if item.isAllOption {
-					m.tagSelectModel.selectedTag = ""
-				} else {
-					m.tagSelectModel.selectedTag = item.name
-				}
-
-				m.screen = processingScreen
-				// Ensure progress bar has proper width
-				if m.width > 0 {
-					m.processingModel.progress.SetWidth(m.width - 4)
-				}
-				return m.startProcessing()
-			}
-		case "esc":
-			m.screen = configScreen
-		}
-	}
-
-	var cmd tea.Cmd
-	if len(m.tagSelectModel.tags) == 0 {
-		// Tags still loading: keep spinner animating
-		m.tagSelectModel.spinner, cmd = m.tagSelectModel.spinner.Update(msg)
-		return cmd
-	}
-	m.tagSelectModel.list, cmd = m.tagSelectModel.list.Update(msg)
-	return cmd
-}
-
-func (m *tuiModel) updateResultsScreen(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc":
-			// Check if the list is filtered - if so, clear filter instead of going back
-			if m.resultsModel.list.IsFiltered() {
-				m.resultsModel.list.ResetFilter()
-				return nil
-			} else {
-				// No filter active, go back to file select
-				m.screen = fileSelectScreen
-				return nil
-			}
-		case "enter":
-			// Show detail view for selected podcast
-			if m.resultsModel.list.SelectedItem() != nil {
-				item := m.resultsModel.list.SelectedItem().(podcastItem)
-				m.detailModel = newDetailModel(item.PodcastStats)
-				m.screen = podcastDetailScreen
-			}
-		case "h":
-			// Show histogram view
-			m.histogramModel = m.generateHistogram(m.resultsModel.stats)
-			m.screen = histogramScreen
-		case "s":
-			// Cycle through sort modes
-			m.resultsModel.sortMode = (m.resultsModel.sortMode + 1) % 4
-			m.sortAndUpdateResults()
-		case "n":
-			// Sort by name
-			m.resultsModel.sortMode = sortByName
-			m.sortAndUpdateResults()
-		case "p":
-			// Sort by priority (ascending)
-			m.resultsModel.sortMode = sortByPriorityAsc
-			m.sortAndUpdateResults()
-		case "P":
-			// Sort by priority (descending)
-			m.resultsModel.sortMode = sortByPriorityDesc
-			m.sortAndUpdateResults()
-		case "u":
-			// Update backup file (only available for backup files)
-			if m.isBackupFile {
-				return m.prepareBackupUpdate()
-			}
-		}
-	}
-
-	m.resultsModel.list, cmd = m.resultsModel.list.Update(msg)
-	return cmd
-}
-
-func (m *tuiModel) updateDetailScreen(msg tea.Msg) tea.Cmd {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			// Save changes and go back
-			if err := m.saveDetailChanges(); err != nil {
-				m.err = err
-			} else {
-				m.screen = resultsScreen
-			}
-
-		case "tab", "shift+tab", "up", "down":
-			if msg.String() == "up" || msg.String() == "shift+tab" {
-				m.detailModel.focused--
-			} else {
-				m.detailModel.focused++
-			}
-
-			if m.detailModel.focused > len(m.detailModel.inputs)-1 {
-				m.detailModel.focused = 0
-			} else if m.detailModel.focused < 0 {
-				m.detailModel.focused = len(m.detailModel.inputs) - 1
-			}
-
-			for i := range m.detailModel.inputs {
-				if i == m.detailModel.focused {
-					m.detailModel.inputs[i].Focus()
-				} else {
-					m.detailModel.inputs[i].Blur()
-				}
-			}
-		}
-	}
-
-	for i := range m.detailModel.inputs {
-		var cmd tea.Cmd
-		m.detailModel.inputs[i], cmd = m.detailModel.inputs[i].Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	return tea.Batch(cmds...)
-}
-
-func (m *tuiModel) updateHistogramScreen(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "r":
-			// Return to results screen
-			m.screen = resultsScreen
-		}
-	}
-	return nil
-}
-
-func (m *tuiModel) generateHistogram(stats []PodcastStats) histogramModel {
-	if len(stats) == 0 {
-		return histogramModel{}
-	}
-
-	// Find min and max scores for dynamic range
-	minScore := stats[0].CompositeScore
-	maxScore := stats[0].CompositeScore
-	for _, stat := range stats {
-		if stat.CompositeScore < minScore {
-			minScore = stat.CompositeScore
-		}
-		if stat.CompositeScore > maxScore {
-			maxScore = stat.CompositeScore
-		}
-	}
-
-	// Create 10 buckets with dynamic range
-	buckets := make([]int, 10)
-	labels := make([]string, 10)
-
-	bucketSize := (maxScore - minScore) / 10.0
-	if bucketSize == 0 {
-		bucketSize = 1.0 // Prevent division by zero if all scores are the same
-	}
-
-	// Calculate the maximum width needed for formatting numbers
-	maxWidth := 0
-	for i := range 10 {
-		low := minScore + float64(i)*bucketSize
-		high := minScore + float64(i+1)*bucketSize
-		lowStr := fmt.Sprintf("%.1f", low)
-		highStr := fmt.Sprintf("%.1f", high)
-		if len(lowStr) > maxWidth {
-			maxWidth = len(lowStr)
-		}
-		if len(highStr) > maxWidth {
-			maxWidth = len(highStr)
-		}
-	}
-
-	for i := range 10 {
-		low := minScore + float64(i)*bucketSize
-		high := minScore + float64(i+1)*bucketSize
-		labels[i] = fmt.Sprintf("%*s - %*s", maxWidth, fmt.Sprintf("%.1f", low), maxWidth, fmt.Sprintf("%.1f", high))
-	}
-
-	// Distribute scores into buckets
-	for _, stat := range stats {
-		bucketIndex := int((stat.CompositeScore - minScore) / bucketSize)
-		if bucketIndex >= 10 {
-			bucketIndex = 9
-		}
-		if bucketIndex < 0 {
-			bucketIndex = 0
-		}
-		buckets[bucketIndex]++
-	}
-
-	// Find max count for scaling
-	maxCount := 0
-	for _, count := range buckets {
-		if count > maxCount {
-			maxCount = count
-		}
-	}
-
-	return histogramModel{
-		stats:    stats,
-		buckets:  buckets,
-		labels:   labels,
-		maxCount: maxCount,
-	}
-}
-
-func (m *tuiModel) saveDetailChanges() error {
-	// Parse the new values from inputs
-	unlistedStr := m.detailModel.inputs[0].Value()
-	speedStr := m.detailModel.inputs[1].Value()
-
-	unlistened, err := strconv.Atoi(unlistedStr)
-	if err != nil {
-		return fmt.Errorf("invalid unlistened count: %s", unlistedStr)
-	}
-
-	speed, err := strconv.ParseFloat(speedStr, 64)
-	if err != nil {
-		return fmt.Errorf("invalid playback speed: %s", speedStr)
-	}
-
-	if speed <= 0 {
-		return fmt.Errorf("playback speed must be positive")
-	}
-
-	if unlistened < 0 {
-		return fmt.Errorf("unlistened count cannot be negative")
-	}
-
-	// Update cache
-	updateCacheWithPlaybackSpeed(m.cache, m.detailModel.podcast.URL, unlistened, speed)
-
-	// Update the podcast stats in results
-	for i := range m.resultsModel.stats {
-		if m.resultsModel.stats[i].URL == m.detailModel.podcast.URL {
-			m.resultsModel.stats[i].UnlistenedEpisodes = unlistened
-			m.resultsModel.stats[i].PlaybackSpeed = speed
-			// Recalculate dependent values
-			m.resultsModel.stats[i].AvgEpisodeLengthMins = m.detailModel.podcast.AvgEpisodeLengthMins * m.detailModel.podcast.PlaybackSpeed / speed
-			m.resultsModel.stats[i].CompositeScore = calculateCompositeScore(m.resultsModel.stats[i])
-
-			// Update the detail model with new values
-			m.detailModel.podcast = m.resultsModel.stats[i]
-			break
-		}
-	}
-
-	// Re-sort the list if needed
-	items := make([]list.Item, len(m.resultsModel.stats))
-	for i, stat := range m.resultsModel.stats {
-		bucketNumber := m.calculateBucketNumber(stat.CompositeScore)
-		items[i] = podcastItem{stat, bucketNumber}
-	}
-	m.resultsModel.list.SetItems(items)
-
-	// Save cache to file
-	return saveCache(m.cacheFile, m.cache)
 }
 
 func (m *tuiModel) View() tea.View {
@@ -902,6 +530,7 @@ func (m *tuiModel) View() tea.View {
 	case backupUpdateScreen:
 		return m.backupUpdateView()
 	}
+
 	return tea.NewView("")
 }
 
@@ -911,9 +540,9 @@ func (m *tuiModel) fileSelectView() tea.View {
 	s.WriteString(titleStyle.Render("🎧 PodStats TUI"))
 	s.WriteString("\n")
 	s.WriteString(subtitleStyle.Render("Select an OPML file or PodcastAddict backup file to analyze"))
-	s.WriteString("\n\n")
+	s.WriteString("\n")
 	s.WriteString(m.filePicker.View())
-	s.WriteString("\n\n")
+	s.WriteString("\n")
 	s.WriteString("💡 ")
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Navigate with arrow keys, Enter to select, q to quit"))
 
@@ -930,39 +559,17 @@ func (m *tuiModel) configView() tea.View {
 
 	s.WriteString(titleStyle.Render("⚙️  Configuration"))
 	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render(fmt.Sprintf("File: %s", m.opmlFile)))
+	s.WriteString(subtitleStyle.Render("File: " + m.opmlFile))
 	s.WriteString("\n\n")
 
-	s.WriteString("Configure cache usage options:\n\n")
-
-	labels := []string{
-		"🔄 Use cached playback speed values? (y/n):",
-		"📊 Use cached unlistened episode counts? (y/n):",
-	}
-
-	for i, input := range m.configModel.inputs {
-		s.WriteString(labels[i] + "\n")
-		if i == m.configModel.focused {
-			s.WriteString(inputStyle.Render(input.View()))
-		} else {
-			s.WriteString(input.View())
-		}
-		s.WriteString("\n\n")
-	}
-
-	s.WriteString("💡 ")
-	s.WriteString(lipgloss.NewStyle().Italic(true).Render("Tab/Shift+Tab to navigate, Enter to start, Esc to go back"))
+	s.WriteString(m.configModel.form.View())
 
 	return tea.NewView(s.String())
 }
 
 func (m *tuiModel) tagSelectView() tea.View {
 	var s strings.Builder
-
-	s.WriteString(titleStyle.Render("🏷️  Tag Selection"))
-	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render(fmt.Sprintf("File: %s", m.opmlFile)))
-	s.WriteString("\n")
+	// Title is now embedded in list.Title to save vertical space
 
 	if len(m.tagSelectModel.tags) == 0 {
 		s.WriteString("🏷 Loading tags")
@@ -981,33 +588,51 @@ func (m *tuiModel) processingView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🔄 Processing Podcasts"))
-	s.WriteString("\n\n")
+	s.WriteString("\n")
 
-	if !m.processingModel.finished {
-		s.WriteString(fmt.Sprintf("📡 Analyzing podcast %d of %d\n",
+	// Multi-podcast processing state requires conditional updates.
+	if !m.processingModel.finished { //nolint:nestif
+		s.WriteString(fmt.Sprintf("Analyzing podcast %d of %d\n",
 			m.processingModel.current, m.processingModel.total))
+
 		if m.processingModel.currentTitle != "" {
-			visibleWidth := m.width - len("🎙️  Current: ")
+			prefix := "Current: "
+			maxWidth := m.width - lipgloss.Width(prefix)
+
 			truncatedTitle := m.processingModel.currentTitle
-			if visibleWidth > 3 && len(m.processingModel.currentTitle) > visibleWidth {
-				truncatedTitle = truncatedTitle[:visibleWidth-3] + "..."
+			if maxWidth > 3 && lipgloss.Width(m.processingModel.currentTitle) > maxWidth {
+				// Truncate by rune count to handle multi-byte chars
+				runes := []rune(m.processingModel.currentTitle)
+				for lipgloss.Width(string(runes)) > maxWidth-3 && len(runes) > 0 {
+					runes = runes[:len(runes)-1]
+				}
+
+				truncatedTitle = string(runes) + "..."
 			}
-			s.WriteString(fmt.Sprintf("🎙️  Current: %s\n", truncatedTitle))
+
+			// Use lipgloss to ensure the line is exactly the right width
+			currentLine := lipgloss.NewStyle().
+				Width(m.width).
+				Render(prefix + truncatedTitle)
+			s.WriteString(currentLine)
+			s.WriteString("\n")
 		}
-		s.WriteString(fmt.Sprintf("✅ Processed: %d podcasts\n", len(m.processingModel.stats)))
+
+		s.WriteString(fmt.Sprintf("Processed: %d podcasts\n", len(m.processingModel.stats)))
 		s.WriteString("\n")
 
 		percent := 0.0
 		if m.processingModel.total > 0 {
 			percent = float64(m.processingModel.current) / float64(m.processingModel.total)
 		}
+
 		s.WriteString(m.processingModel.progress.ViewAs(percent))
 		s.WriteString(fmt.Sprintf("\n\n⏳ Progress: %.1f%% complete", percent*100))
 	} else {
 		s.WriteString(successStyle.Render("✅ Processing complete!"))
-		s.WriteString(fmt.Sprintf("\n\n📊 Successfully analyzed %d podcasts", len(m.processingModel.stats)))
-		s.WriteString("\n\n🎯 Ready to view results and histogram!")
-		s.WriteString("\n\n💡 ")
+		s.WriteString(fmt.Sprintf("\n📊 Successfully analyzed %d podcasts", len(m.processingModel.stats)))
+		s.WriteString("\n🎯 Ready to view results and histogram!")
+		s.WriteString("\n💡 ")
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press any key to view results"))
 	}
 
@@ -1019,6 +644,7 @@ func (m *tuiModel) resultsView() tea.View {
 
 	// Show current sort mode
 	var sortModeText string
+
 	switch m.resultsModel.sortMode {
 	case sortByScore:
 		sortModeText = "Score (High to Low)"
@@ -1030,8 +656,9 @@ func (m *tuiModel) resultsView() tea.View {
 		sortModeText = "Priority (10-1)"
 	}
 
-	s.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render(fmt.Sprintf("Sort: %s", sortModeText)))
-	s.WriteString("\n\n")
+	// Combine sort mode into the list title to save vertical space
+	m.resultsModel.list.Title = "🎧 Podcast Rankings - Sort: " + sortModeText
+	// Title visibility is handled at construction; avoid resizing here to prevent flicker
 
 	s.WriteString(m.resultsModel.list.View())
 	s.WriteString("\n💡 ")
@@ -1039,25 +666,29 @@ func (m *tuiModel) resultsView() tea.View {
 	// Show different help text based on file type
 	var helpText string
 	if m.isBackupFile {
-		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | p priority↑ | P priority↓ | u update-backup | Esc file | q quit"
+		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | " +
+			"p priority↑ | P priority↓ | u update-backup | Esc file | q quit"
 	} else {
-		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | p priority↑ | P priority↓ | Esc file | q quit"
+		helpText = "↑↓ navigate | Enter edit | h histogram | s cycle-sort | n name | " +
+			"p priority↑ | P priority↓ | Esc file | q quit"
 	}
+
 	s.WriteString(lipgloss.NewStyle().Italic(true).Render(helpText))
 
 	return tea.NewView(s.String())
 }
 
-func (m *tuiModel) histogramView() tea.View {
+func (m *tuiModel) histogramView() tea.View { //nolint:funlen // Complex view rendering; splitting would hurt readability
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("📊 Composite Score Histogram"))
+	s.WriteString(" - ")
+	s.WriteString(subtitleStyle.Render(fmt.Sprintf("%d podcasts", len(m.histogramModel.stats))))
 	s.WriteString("\n")
-	s.WriteString(subtitleStyle.Render(fmt.Sprintf("Distribution of %d podcasts", len(m.histogramModel.stats))))
-	s.WriteString("\n\n")
 
 	if len(m.histogramModel.stats) == 0 {
 		s.WriteString("No podcast data to display")
+
 		return tea.NewView(s.String())
 	}
 
@@ -1070,6 +701,7 @@ func (m *tuiModel) histogramView() tea.View {
 	for i, count := range m.histogramModel.buckets {
 		label := m.histogramModel.labels[i]
 		bucketNumber := 10 - i // Reverse the bucket numbering for priority display
+
 		barLength := 0
 		if m.histogramModel.maxCount > 0 {
 			barLength = (count * barWidth) / m.histogramModel.maxCount
@@ -1132,20 +764,22 @@ func (m *tuiModel) detailView() tea.View {
 	s.WriteString(titleStyle.Render("🎙️  Podcast Details"))
 	s.WriteString("\n")
 	s.WriteString(subtitleStyle.Render(m.detailModel.podcast.Title))
-	s.WriteString("\n\n")
+	s.WriteString("\n")
 
 	labels := []string{
 		"📊 Unlistened Episodes:",
 		"⏩ Playback Speed:",
 	}
 
-	for i, input := range m.detailModel.inputs {
-		s.WriteString(fmt.Sprintf("%s\n", labels[i]))
+	for i := range m.detailModel.inputs {
+		s.WriteString(labels[i] + "\n")
+
 		if i == m.detailModel.focused {
-			s.WriteString(inputStyle.Render(input.View()))
+			s.WriteString(inputStyle.Render(m.detailModel.inputs[i].View()))
 		} else {
-			s.WriteString(input.View())
+			s.WriteString(m.detailModel.inputs[i].View())
 		}
+
 		s.WriteString("\n\n")
 	}
 
@@ -1175,7 +809,7 @@ type podcastItem struct {
 }
 
 func (i podcastItem) FilterValue() string {
-	return i.PodcastStats.SortTitle
+	return i.SortTitle
 }
 
 func (i podcastItem) Title() string {
@@ -1191,7 +825,7 @@ func newDetailModel(stats PodcastStats) detailModel {
 	inputs := make([]textinput.Model, 2)
 
 	inputs[0] = textinput.New()
-	inputs[0].SetValue(fmt.Sprintf("%d", stats.UnlistenedEpisodes))
+	inputs[0].SetValue(strconv.Itoa(stats.UnlistenedEpisodes))
 	inputs[0].Focus()
 
 	inputs[1] = textinput.New()
@@ -1216,8 +850,10 @@ func runTUI() {
 
 func (m *tuiModel) startProcessing() tea.Cmd {
 	return tea.Cmd(func() tea.Msg {
-		var podcasts []Outline
-		var err error
+		var (
+			podcasts []Outline
+			err      error
+		)
 
 		if m.isBackupFile {
 			// Extract podcasts from backup file with tag filter
@@ -1248,13 +884,14 @@ func (m *tuiModel) loadTags() tea.Cmd {
 		if err != nil {
 			return errorMsg{err}
 		}
-		defer backupManager.Close()
 
-		if err := backupManager.ExtractDatabase(); err != nil {
+		defer func() { _ = backupManager.Close() }()
+
+		if err = backupManager.ExtractDatabase(); err != nil {
 			return errorMsg{err}
 		}
 
-		if err := backupManager.OpenDatabase(); err != nil {
+		if err = backupManager.OpenDatabase(); err != nil {
 			return errorMsg{err}
 		}
 
@@ -1273,13 +910,14 @@ func (m *tuiModel) loadSpeedSettings() tea.Cmd {
 		if err != nil {
 			return errorMsg{err}
 		}
-		defer backupManager.Close()
 
-		if err := backupManager.ExtractDatabase(); err != nil {
+		defer func() { _ = backupManager.Close() }()
+
+		if err = backupManager.ExtractDatabase(); err != nil {
 			return errorMsg{err}
 		}
 
-		if err := backupManager.OpenDatabase(); err != nil {
+		if err = backupManager.OpenDatabase(); err != nil {
 			return errorMsg{err}
 		}
 
@@ -1295,19 +933,20 @@ func (m *tuiModel) loadSpeedSettings() tea.Cmd {
 	})
 }
 
-// extractPodcastsFromBackupWithTag extracts podcasts from backup filtered by tag
+// extractPodcastsFromBackupWithTag extracts podcasts from backup filtered by tag.
 func extractPodcastsFromBackupWithTag(backupFile string, tag string) ([]Outline, error) {
 	bm, err := NewBackupManager(backupFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open backup file: %w", err)
 	}
-	defer bm.Close()
 
-	if err := bm.ExtractDatabase(); err != nil {
+	defer func() { _ = bm.Close() }()
+
+	if err = bm.ExtractDatabase(); err != nil {
 		return nil, fmt.Errorf("failed to extract database: %w", err)
 	}
 
-	if err := bm.OpenDatabase(); err != nil {
+	if err = bm.OpenDatabase(); err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
@@ -1315,12 +954,12 @@ func extractPodcastsFromBackupWithTag(backupFile string, tag string) ([]Outline,
 
 	if tag == "" {
 		// No tag filter, get all podcasts
-		backupStats, err := bm.GetPodcastStats(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
+		backupStats, e := bm.GetPodcastStats(ctx)
+		if e != nil {
+			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", e)
 		}
 
-		var podcasts []Outline
+		podcasts := make([]Outline, 0, len(backupStats))
 		for _, stat := range backupStats {
 			podcast := Outline{
 				Title:  stat.Name,
@@ -1329,37 +968,41 @@ func extractPodcastsFromBackupWithTag(backupFile string, tag string) ([]Outline,
 			}
 			podcasts = append(podcasts, podcast)
 		}
-		return podcasts, nil
-	} else {
-		// Filter by selected tag
-		backupStats, err := bm.GetPodcastStatsByTag(ctx, tag)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
-		}
 
-		var podcasts []Outline
-		for _, stat := range backupStats {
-			podcast := Outline{
-				Title:  stat.Name,
-				XMLURL: stat.FeedUrl,
-				Text:   stat.Name,
-			}
-			podcasts = append(podcasts, podcast)
-		}
 		return podcasts, nil
 	}
+
+	// Filter by selected tag
+	backupStats, err := bm.GetPodcastStatsByTag(ctx, tag)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
+	}
+
+	podcasts := make([]Outline, 0, len(backupStats))
+	for _, stat := range backupStats {
+		podcast := Outline{
+			Title:  stat.Name,
+			XMLURL: stat.FeedUrl,
+			Text:   stat.Name,
+		}
+		podcasts = append(podcasts, podcast)
+	}
+
+	return podcasts, nil
 }
 
 func (m *tuiModel) processNextPodcast() tea.Cmd {
 	return tea.Cmd(func() tea.Msg {
 		if m.processingModel.current >= len(m.processingModel.podcasts) {
 			// All done, save cache and complete
-			saveCache(m.cacheFile, m.cache)
+			_ = saveCache(m.cacheFile, m.cache)
+
 			return processingCompleteMsg{stats: m.processingModel.stats}
 		}
 
 		// Process current podcast
 		podcast := m.processingModel.podcasts[m.processingModel.current]
+
 		stats, err := analyzePodcastTUI(podcast, m.cache,
 			m.configModel.options.useCachedUnlistened,
 			m.configModel.options.useCachedSpeed,
@@ -1393,17 +1036,19 @@ func (m *tuiModel) prepareBackupUpdate() tea.Cmd {
 		if err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open backup file: %v", err)}
 		}
-		defer bm.Close()
 
-		if err := bm.ExtractDatabase(); err != nil {
+		defer func() { _ = bm.Close() }()
+
+		if err = bm.ExtractDatabase(); err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to extract database: %v", err)}
 		}
 
-		if err := bm.OpenDatabase(); err != nil {
+		if err = bm.OpenDatabase(); err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open database: %v", err)}
 		}
 
 		ctx := context.Background()
+
 		backupStats, err := bm.GetPodcastStats(ctx)
 		if err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to get podcast stats: %v", err)}
@@ -1428,15 +1073,13 @@ func (m *tuiModel) prepareBackupUpdate() tea.Cmd {
 		// Assign priorities based on ranking using original priority range (1-11)
 		maxPriority := int64(11)
 		minPriority := int64(1)
+
 		for i, stats := range allStats {
 			// Check if this podcast exists in the backup
 			if currentPriority, exists := currentPriorities[stats.URL]; exists {
 				// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
 				priorityRange := maxPriority - minPriority
-				newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
-				if newPriority < minPriority {
-					newPriority = minPriority
-				}
+				newPriority := max(maxPriority-int64(i)*priorityRange/int64(len(allStats)), minPriority)
 
 				if newPriority != currentPriority {
 					priorityUpdates[stats.URL] = newPriority
@@ -1456,22 +1099,26 @@ func (m *tuiModel) updateBackupUpdateScreen(msg tea.Msg) tea.Cmd {
 		case "y", "Y":
 			if !m.backupUpdateModel.updating && !m.backupUpdateModel.complete {
 				m.backupUpdateModel.updating = true
+
 				return tea.Batch(m.performBackupUpdate(), m.backupUpdateModel.spinner.Tick)
 			}
-		case "n", "N", "esc":
+		case "n", "N", keyEsc:
 			if !m.backupUpdateModel.updating {
 				m.screen = resultsScreen
+
 				return nil
 			}
-		case "enter":
+		case keyEnter:
 			if m.backupUpdateModel.complete {
 				m.screen = resultsScreen
+
 				return nil
 			}
 		}
 	case backupUpdateCompleteMsg:
 		m.backupUpdateModel.updating = false
 		m.backupUpdateModel.complete = true
+
 		m.backupUpdateModel.success = msg.success
 		if !msg.success {
 			m.backupUpdateModel.errorMsg = msg.error
@@ -1480,9 +1127,12 @@ func (m *tuiModel) updateBackupUpdateScreen(msg tea.Msg) tea.Cmd {
 	// Animate spinner while updating
 	if m.backupUpdateModel.updating {
 		var cmd tea.Cmd
+
 		m.backupUpdateModel.spinner, cmd = m.backupUpdateModel.spinner.Update(msg)
+
 		return cmd
 	}
+
 	return nil
 }
 
@@ -1494,17 +1144,19 @@ func (m *tuiModel) performBackupUpdate() tea.Cmd {
 		if err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open backup file: %v", err)}
 		}
-		defer bm.Close()
 
-		if err := bm.ExtractDatabase(); err != nil {
+		defer func() { _ = bm.Close() }()
+
+		if err = bm.ExtractDatabase(); err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to extract database: %v", err)}
 		}
 
-		if err := bm.OpenDatabase(); err != nil {
+		if err = bm.OpenDatabase(); err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to open database: %v", err)}
 		}
 
 		ctx := context.Background()
+
 		backupStats, err := bm.GetPodcastStats(ctx)
 		if err != nil {
 			return backupUpdateCompleteMsg{success: false, error: fmt.Sprintf("Failed to get podcast stats: %v", err)}
@@ -1529,15 +1181,13 @@ func (m *tuiModel) performBackupUpdate() tea.Cmd {
 		// Assign priorities based on ranking using original priority range (1-11)
 		maxPriority := int64(11)
 		minPriority := int64(1)
+
 		for i, stats := range allStats {
 			// Check if this podcast exists in the backup
 			if currentPriority, exists := currentPriorities[stats.URL]; exists {
 				// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
 				priorityRange := maxPriority - minPriority
-				newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
-				if newPriority < minPriority {
-					newPriority = minPriority
-				}
+				newPriority := max(maxPriority-int64(i)*priorityRange/int64(len(allStats)), minPriority)
 
 				if newPriority != currentPriority {
 					priorityUpdates[stats.URL] = newPriority
@@ -1563,29 +1213,31 @@ func (m *tuiModel) backupUpdateView() tea.View {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🔄 Update Backup Priorities"))
-	s.WriteString("\n\n")
+	s.WriteString("\n")
 
-	if !m.backupUpdateModel.updating && !m.backupUpdateModel.complete {
+	switch {
+	case !m.backupUpdateModel.updating && !m.backupUpdateModel.complete:
 		s.WriteString("This will update the podcast priorities in your backup file based on the analysis results.\n")
 		s.WriteString("Podcasts with better composite scores (more manageable) will get higher priorities.\n\n")
 		s.WriteString("⚠️  This will modify your backup file. Do you want to continue?\n\n")
 		s.WriteString(buttonStyle.Render("Y") + " Yes  " + buttonStyle.Render("N") + " No")
 		s.WriteString("\n\n💡 ")
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Y to continue, N or Esc to cancel"))
-	} else if m.backupUpdateModel.updating {
+	case m.backupUpdateModel.updating:
 		s.WriteString("🔄 Updating backup file")
 		s.WriteString(m.backupUpdateModel.spinner.View())
 		s.WriteString("\n\nPlease wait while priorities are calculated and applied...")
-	} else if m.backupUpdateModel.complete {
+	case m.backupUpdateModel.complete:
 		if m.backupUpdateModel.success {
 			s.WriteString(successStyle.Render("✅ Backup Update Complete!"))
-			s.WriteString("\n\n")
+			s.WriteString("\n")
 			s.WriteString(m.backupUpdateModel.errorMsg) // This contains the success message
 		} else {
 			s.WriteString(errorStyle.Render("❌ Backup Update Failed"))
-			s.WriteString("\n\n")
-			s.WriteString(fmt.Sprintf("Error: %s", m.backupUpdateModel.errorMsg))
+			s.WriteString("\n")
+			s.WriteString("Error: " + m.backupUpdateModel.errorMsg)
 		}
+
 		s.WriteString("\n\n💡 ")
 		s.WriteString(lipgloss.NewStyle().Italic(true).Render("Press Enter to continue"))
 	}

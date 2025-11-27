@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,10 +19,13 @@ import (
 	"time"
 	"unicode"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 	"github.com/StephenBrown2/podstats/podcastaddict"
 )
+
+var ErrFailedToReadInput = errors.New("failed to read input")
 
 // OPML structures.
 type OPML struct {
@@ -48,6 +52,8 @@ type Outline struct {
 	Outlines  []Outline `xml:"outline"`
 }
 
+const unknownStr = "Unknown"
+
 // RSS/Atom feed structures.
 type RSS struct {
 	XMLName xml.Name `xml:"rss"`
@@ -61,10 +67,10 @@ type Atom struct {
 }
 
 type Channel struct {
+	Value       *Value `xml:"value"`
 	Title       string `xml:"title"`
 	Description string `xml:"description"`
 	Items       []Item `xml:"item"`
-	Value       *Value `xml:"value"`
 }
 
 type Item struct {
@@ -103,7 +109,7 @@ type ValueRecipient struct {
 	Split   string `xml:"split,attr"`
 }
 
-// Statistics structure.
+// PodcastStats holds statistics for a podcast.
 type PodcastStats struct {
 	Title                string
 	SortTitle            string
@@ -116,12 +122,12 @@ type PodcastStats struct {
 	CompositeScore       float64
 }
 
-// Cache structure for storing user input.
+// PodcastCache stores user input for a podcast.
 type PodcastCache struct {
 	URL                string  `json:"url"`
+	LastUpdated        string  `json:"last_updated"`
 	UnlistenedEpisodes int     `json:"unlistened_episodes"`
 	PlaybackSpeed      float64 `json:"playback_speed"`
-	LastUpdated        string  `json:"last_updated"`
 }
 
 type CacheData struct {
@@ -135,18 +141,20 @@ var leadingArticles = []string{"A", "An", "The", "This", "Ye"}
 func loadCache(cacheFile string) *CacheData {
 	cache := &CacheData{Podcasts: []PodcastCache{}}
 
-	file, err := os.Open(cacheFile)
+	file, err := os.Open(cacheFile) //nolint:gosec // G304: opening cache file from config
 	if err != nil {
 		return cache // Return empty cache if file doesn't exist
 	}
-	defer file.Close()
+
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return cache
 	}
 
-	json.Unmarshal(data, cache)
+	_ = json.Unmarshal(data, cache)
+
 	return cache
 }
 
@@ -157,7 +165,7 @@ func saveCache(cacheFile string, cache *CacheData) error {
 		return err
 	}
 
-	return os.WriteFile(cacheFile, data, 0o644)
+	return os.WriteFile(cacheFile, data, 0o600)
 }
 
 // getCachedUnlistenedCount gets the cached unlistened count for a podcast URL.
@@ -167,6 +175,7 @@ func getCachedUnlistenedCount(cache *CacheData, url string) (int, bool) {
 			return podcast.UnlistenedEpisodes, true
 		}
 	}
+
 	return 0, false
 }
 
@@ -178,9 +187,11 @@ func getCachedPlaybackSpeed(cache *CacheData, url string) (float64, bool) {
 			if podcast.PlaybackSpeed == 0 {
 				return 2.0, false
 			}
+
 			return podcast.PlaybackSpeed, true
 		}
 	}
+
 	return 2.0, false
 }
 
@@ -191,6 +202,7 @@ func updateCache(cache *CacheData, url string, unlistenedCount int) {
 		if podcast.URL == url {
 			cache.Podcasts[i].UnlistenedEpisodes = unlistenedCount
 			cache.Podcasts[i].LastUpdated = time.Now().Format(time.DateTime)
+
 			return
 		}
 	}
@@ -212,6 +224,7 @@ func updateCacheWithPlaybackSpeed(cache *CacheData, url string, unlistenedCount 
 			cache.Podcasts[i].UnlistenedEpisodes = unlistenedCount
 			cache.Podcasts[i].PlaybackSpeed = playbackSpeed
 			cache.Podcasts[i].LastUpdated = time.Now().Format(time.DateTime)
+
 			return
 		}
 	}
@@ -225,42 +238,98 @@ func updateCacheWithPlaybackSpeed(cache *CacheData, url string, unlistenedCount 
 	})
 }
 
+// printUsage prints general usage information for the CLI.
+func printUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  podstats --tui [path]                                  # Run TUI mode; optional path is file or directory")
+	fmt.Println("  podstats [--cached[=all|speed|unlistened]] <opml_file> # Analyze OPML file")
+	fmt.Println("  podstats [--cached[=all|speed|unlistened]] <backup_file> # Analyze and update backup file")
+	fmt.Println("  podstats --backup <command> [args...]                  # Backup operations")
+	fmt.Println("")
+	fmt.Println("File Types:")
+	fmt.Println("  OPML files (.opml): Analyze podcasts and display results")
+	fmt.Println("  Backup files (.backup/.backup.zip): Analyze and update podcast priorities in backup zip")
+	fmt.Println("")
+	fmt.Println("Backup commands:")
+	fmt.Println("  podstats --backup stats <backup_file>                  # Show podcast stats from backup")
+	fmt.Println("  podstats --backup speeds <backup_file>                 # Show podcast speed settings from backup")
+	fmt.Println("  podstats --backup update <backup_file> <feed_url> <priority> # Update podcast priority")
+}
+
+// CLI orchestration function; splitting would reduce cohesion.
+//
+//nolint:funlen,maintidx // CLI orchestration with arg parsing and multiple modes
 func main() {
-	// Check if we should run in TUI mode
-	if len(os.Args) == 2 && os.Args[1] == "--tui" {
-		runTUI()
+	// Handle help flags early to avoid misinterpretation as a file
+	if len(os.Args) >= 2 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
+		printUsage()
+
 		return
+	}
+
+	// Check if we should run in TUI mode (optionally with a path)
+	if len(os.Args) >= 2 && os.Args[1] == "--tui" {
+		switch len(os.Args) {
+		case 2:
+			runTUI()
+
+			return
+		case 3:
+			path := os.Args[2]
+
+			info, err := os.Stat(path)
+			if err != nil {
+				fmt.Printf("Error: Path does not exist: %s\n", path)
+				os.Exit(1)
+			}
+
+			// Create TUI and set initial state
+			tui := NewTUI()
+
+			if info.IsDir() {
+				// Start filepicker in this directory
+				tui.filePicker.CurrentDirectory = path
+			} else {
+				// Use this file directly, skip filepicker
+				tui.opmlFile = path
+				lowerPath := strings.ToLower(path)
+				tui.isBackupFile = strings.HasSuffix(lowerPath, ".backup.zip") || strings.HasSuffix(lowerPath, ".backup")
+				tui.screen = configScreen
+			}
+
+			p := tea.NewProgram(tui)
+			if _, err := p.Run(); err != nil {
+				fmt.Printf("Error running TUI: %v", err)
+				os.Exit(1)
+			}
+
+			return
+		default:
+			// Too many arguments after --tui
+			printUsage()
+			os.Exit(1)
+		}
 	}
 
 	// Check for backup command
 	if len(os.Args) >= 2 && os.Args[1] == "--backup" {
 		handleBackupCommand()
+
 		return
 	}
 
 	// Original CLI mode
 	if len(os.Args) < 2 || len(os.Args) > 3 {
-		fmt.Println("Usage:")
-		fmt.Println("  podstats --tui                                          # Run TUI mode")
-		fmt.Println("  podstats [--cached[=all|speed|unlistened]] <opml_file> # Analyze OPML file")
-		fmt.Println("  podstats [--cached[=all|speed|unlistened]] <backup_file> # Analyze and update backup file")
-		fmt.Println("  podstats --backup <command> [args...]                  # Backup operations")
-		fmt.Println("")
-		fmt.Println("File Types:")
-		fmt.Println("  OPML files (.opml): Analyze podcasts and display results")
-		fmt.Println("  Backup files (.backup): Analyze and update podcast priorities in backup zip")
-		fmt.Println("")
-		fmt.Println("Backup commands:")
-		fmt.Println("  podstats --backup stats <backup_file>                  # Show podcast stats from backup")
-		fmt.Println("  podstats --backup speeds <backup_file>                 # Show podcast speed settings from backup")
-		fmt.Println("  podstats --backup update <backup_file> <feed_url> <priority> # Update podcast priority")
+		printUsage()
 		os.Exit(1)
 	}
 
-	var useCachedSpeed bool
-	var useCachedUnlistened bool
-	var inputFile string
-	var isBackupFile bool
+	var (
+		useCachedSpeed      bool
+		useCachedUnlistened bool
+		inputFile           string
+		isBackupFile        bool
+	)
 
 	// Parse arguments
 	args := os.Args[1:]
@@ -269,6 +338,7 @@ func main() {
 	if len(args) > 0 && strings.HasPrefix(args[0], "--cached") {
 		// Parse the cached parameter
 		cachedParam := "all" // default
+
 		if strings.Contains(args[0], "=") {
 			parts := strings.Split(args[0], "=")
 			if len(parts) == 2 {
@@ -288,7 +358,7 @@ func main() {
 			useCachedUnlistened = true
 		default:
 			fmt.Printf("Invalid cached parameter: %s. Valid options: all, speed, unlistened\n", cachedParam)
-			fmt.Println("Usage: podstats [--cached[=all|speed|unlistened]] <opml_file|backup_file>")
+			printUsage()
 			os.Exit(1)
 		}
 
@@ -300,24 +370,29 @@ func main() {
 		fmt.Println("Error: Input file required (OPML or backup file)")
 		os.Exit(1)
 	}
+
 	inputFile = args[0]
 
 	// Determine file type based on extension
 	lowerInputFile := strings.ToLower(inputFile)
-	if strings.HasSuffix(lowerInputFile, ".backup.zip") || strings.HasSuffix(lowerInputFile, ".backup") {
+	switch {
+	case strings.HasSuffix(lowerInputFile, ".backup.zip"), strings.HasSuffix(lowerInputFile, ".backup"):
 		isBackupFile = true
+
 		fmt.Printf("Detected backup file: %s\n", inputFile)
-	} else if strings.HasSuffix(lowerInputFile, ".opml") {
+	case strings.HasSuffix(lowerInputFile, ".opml"):
 		isBackupFile = false
+
 		fmt.Printf("Detected OPML file: %s\n", inputFile)
-	} else {
+	default:
 		fmt.Printf("Warning: Unrecognized file extension, treating as OPML file: %s\n", inputFile)
+
 		isBackupFile = false
 	}
 
 	if len(args) > 1 {
 		fmt.Printf("Unknown arguments: %v\n", args[1:])
-		fmt.Println("Usage: podstats [--cached[=all|speed|unlistened]] <opml_file|backup_file>")
+		printUsage()
 		os.Exit(1)
 	}
 
@@ -326,26 +401,31 @@ func main() {
 	// Load cache
 	cache := loadCache(cacheFile)
 
-	var allStats []PodcastStats
 	var podcasts []Outline
 
 	if isBackupFile {
 		// Extract podcasts from backup file first
 		fmt.Printf("Extracting podcast list from backup file: %s\n", inputFile)
+
 		var err error
+
 		podcasts, err = extractPodcastsFromBackup(inputFile)
 		if err != nil {
 			log.Fatalf("Error extracting podcasts from backup: %v", err)
 		}
+
 		fmt.Printf("Found %d podcasts in backup file\n", len(podcasts))
 	} else {
 		// Parse OPML file
 		fmt.Printf("Parsing OPML file: %s\n", inputFile)
+
 		var err error
+
 		podcasts, err = parseOPML(inputFile)
 		if err != nil {
 			log.Fatalf("Error parsing OPML: %v", err)
 		}
+
 		fmt.Printf("Found %d podcasts in OPML file\n", len(podcasts))
 	}
 
@@ -360,21 +440,27 @@ func main() {
 				if title == "" {
 					title = podcasts[i].Text
 				}
+
 				podcasts[i].SortTitle = trimArticles(title)
 			}
 		}
+
 		slices.SortStableFunc(podcasts, func(a, b Outline) int {
 			return strings.Compare(a.SortTitle, b.SortTitle)
 		})
 	}
 
 	// Analyze each podcast
+	// Preallocate stats slice for efficiency
+	allStats := make([]PodcastStats, 0, len(podcasts))
+
 	for i, podcast := range podcasts {
 		// Get the display title (fallback to text if title is empty)
 		displayTitle := podcast.Title
 		if displayTitle == "" {
 			displayTitle = podcast.Text
 		}
+
 		displayTitle = strings.ReplaceAll(displayTitle, "&amp;", "&") // Clean up title
 		fmt.Printf("[%d/%d] Analyzing: %s\n", i+1, len(podcasts), dimArticleInTitle(displayTitle))
 		fmt.Printf("  URL: %s\n", podcast.XMLURL)
@@ -382,6 +468,7 @@ func main() {
 		stats, err := analyzePodcastCLI(podcast, cache, useCachedUnlistened, useCachedSpeed)
 		if err != nil {
 			fmt.Printf("  Error: %v\n\n", err)
+
 			continue
 		}
 
@@ -411,19 +498,21 @@ func main() {
 	}
 }
 
-func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
+// Backup extraction workflow; splitting would reduce clarity.
+func extractPodcastsFromBackup(backupFile string) ([]Outline, error) { //nolint:funlen
 	// Create backup manager to read podcast feed URLs
 	bm, err := NewBackupManager(backupFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open backup file: %w", err)
 	}
-	defer bm.Close()
 
-	if err := bm.ExtractDatabase(); err != nil {
+	defer func() { _ = bm.Close() }()
+
+	if err = bm.ExtractDatabase(); err != nil {
 		return nil, fmt.Errorf("failed to extract database: %w", err)
 	}
 
-	if err := bm.OpenDatabase(); err != nil {
+	if err = bm.OpenDatabase(); err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
@@ -438,13 +527,14 @@ func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
 	if selectedTag == "" {
 		// No tag filter, get all podcasts
 		fmt.Println("Analyzing all podcasts...")
-		backupStats, err := bm.GetPodcastStats(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", err)
+
+		backupStats, e := bm.GetPodcastStats(ctx)
+		if e != nil {
+			return nil, fmt.Errorf("failed to get podcast stats from backup: %w", e)
 		}
 
 		// Convert backup stats to Outline format for analysis
-		var podcasts []Outline
+		podcasts := make([]Outline, 0, len(backupStats))
 		for _, stat := range backupStats {
 			podcast := Outline{
 				Title:  stat.Name,
@@ -457,58 +547,68 @@ func extractPodcastsFromBackup(backupFile string) ([]Outline, error) {
 		for i := range podcasts {
 			podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
 		}
-		return podcasts, nil
-	} else {
-		// Filter by selected tag
-		fmt.Printf("Analyzing podcasts with tag: %s\n", selectedTag)
-		backupStats, err := bm.GetPodcastStatsByTag(ctx, selectedTag)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
-		}
 
-		// Convert backup stats to Outline format for analysis
-		var podcasts []Outline
-		for _, stat := range backupStats {
-			podcast := Outline{
-				Title:  stat.Name,
-				XMLURL: stat.FeedUrl,
-				Text:   stat.Name, // fallback
-			}
-			podcasts = append(podcasts, podcast)
-		}
-		// Ensure SortTitle is populated using trimArticles for consistent sorting
-		for i := range podcasts {
-			podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
-		}
 		return podcasts, nil
 	}
+
+	// Filter by selected tag
+	fmt.Printf("Analyzing podcasts with tag: %s\n", selectedTag)
+
+	backupStats, err := bm.GetPodcastStatsByTag(ctx, selectedTag)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get podcast stats by tag from backup: %w", err)
+	}
+
+	// Convert backup stats to Outline format for analysis
+	podcasts := make([]Outline, 0, len(backupStats))
+	for _, stat := range backupStats {
+		podcast := Outline{
+			Title:  stat.Name,
+			XMLURL: stat.FeedUrl,
+			Text:   stat.Name, // fallback
+		}
+		podcasts = append(podcasts, podcast)
+	}
+	// Ensure SortTitle is populated using trimArticles for consistent sorting
+	for i := range podcasts {
+		podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
+	}
+
+	return podcasts, nil
 }
 
-func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
+// Backup update workflow; splitting would fragment logic.
+func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) { //nolint:funlen
 	fmt.Printf("Reading backup file: %s\n", backupFile)
 
 	// Create backup manager to read current priorities
 	bm, err := NewBackupManager(backupFile)
 	if err != nil {
 		fmt.Printf("Error: Failed to open backup file: %v\n", err)
+
 		return
 	}
-	defer bm.Close()
 
-	if err := bm.ExtractDatabase(); err != nil {
+	defer func() { _ = bm.Close() }()
+
+	if err = bm.ExtractDatabase(); err != nil {
 		fmt.Printf("Error: Failed to extract database: %v\n", err)
+
 		return
 	}
 
-	if err := bm.OpenDatabase(); err != nil {
+	if err = bm.OpenDatabase(); err != nil {
 		fmt.Printf("Error: Failed to open database: %v\n", err)
+
 		return
 	}
 
 	ctx := context.Background()
+
 	backupStats, err := bm.GetPodcastStats(ctx)
 	if err != nil {
 		fmt.Printf("Error: Failed to get podcast stats from backup: %v\n", err)
+
 		return
 	}
 
@@ -531,15 +631,13 @@ func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
 	// Best podcasts (lowest composite scores) get highest priorities
 	maxPriority := int64(10)
 	minPriority := int64(1)
+
 	for i, stats := range allStats {
 		// Check if this podcast exists in the backup
 		if currentPriority, exists := currentPriorities[stats.URL]; exists {
 			// Calculate new priority: best podcast gets maxPriority, worst gets minPriority
 			priorityRange := maxPriority - minPriority
-			newPriority := maxPriority - int64(i)*priorityRange/int64(len(allStats))
-			if newPriority < minPriority {
-				newPriority = minPriority
-			}
+			newPriority := max(maxPriority-int64(i)*priorityRange/int64(len(allStats)), minPriority)
 
 			if newPriority != currentPriority {
 				priorityUpdates[stats.URL] = newPriority
@@ -550,6 +648,7 @@ func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
 
 	if len(priorityUpdates) == 0 {
 		fmt.Println("No priority updates needed - all podcasts already have optimal priorities")
+
 		return
 	}
 
@@ -558,6 +657,7 @@ func updateBackupWithAnalysis(backupFile string, allStats []PodcastStats) {
 	// Apply the updates
 	if err := UpdateBackupPriorities(backupFile, priorityUpdates); err != nil {
 		fmt.Printf("Error: Failed to update backup priorities: %v\n", err)
+
 		return
 	}
 
@@ -578,26 +678,29 @@ func handleBackupCommand() {
 	switch subcommand {
 	case "stats":
 		if len(os.Args) != 4 {
-			fmt.Println("Usage: podstats --backup stats <backup_file>")
+			printUsage()
 			os.Exit(1)
 		}
+
 		showBackupStats(os.Args[3])
 
 	case "speeds":
 		if len(os.Args) != 4 {
-			fmt.Println("Usage: podstats --backup speeds <backup_file>")
+			printUsage()
 			os.Exit(1)
 		}
+
 		showBackupSpeeds(os.Args[3])
 
 	case "update":
 		if len(os.Args) != 6 {
-			fmt.Println("Usage: podstats --backup update <backup_file> <feed_url> <priority>")
+			printUsage()
 			os.Exit(1)
 		}
 
 		backupFile := os.Args[3]
 		feedURL := os.Args[4]
+
 		priority, err := strconv.ParseInt(os.Args[5], 10, 64)
 		if err != nil {
 			fmt.Printf("Invalid priority value: %s\n", os.Args[5])
@@ -618,13 +721,14 @@ func showBackupStats(backupFile string) {
 	if err != nil {
 		log.Fatalf("Failed to create backup manager: %v", err)
 	}
-	defer bm.Close()
 
-	if err := bm.ExtractDatabase(); err != nil {
-		log.Fatalf("Failed to extract database: %v", err)
+	defer func() { _ = bm.Close() }()
+
+	if err = bm.ExtractDatabase(); err != nil {
+		log.Fatalf("Failed to extract database: %v", err) //nolint:gocritic // CLI utility requires immediate exit on fatal error
 	}
 
-	if err := bm.OpenDatabase(); err != nil {
+	if err = bm.OpenDatabase(); err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
@@ -676,19 +780,24 @@ func showBackupStats(backupFile string) {
 func showBackupSpeeds(backupFile string) {
 	bm, err := NewBackupManager(backupFile)
 	if err != nil {
-		log.Fatalf("Failed to create backup manager: %v", err)
-	}
-	defer bm.Close()
-
-	if err := bm.ExtractDatabase(); err != nil {
-		log.Fatalf("Failed to extract database: %v", err)
+		log.Printf("Failed to create backup manager: %v", err)
+		os.Exit(1)
 	}
 
-	if err := bm.OpenDatabase(); err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+	defer func() { _ = bm.Close() }()
+
+	if err = bm.ExtractDatabase(); err != nil {
+		log.Printf("Failed to extract database: %v", err)
+		os.Exit(1) //nolint:gocritic // CLI utility requires immediate exit on fatal error
+	}
+
+	if err = bm.OpenDatabase(); err != nil {
+		log.Printf("Failed to open database: %v", err)
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
+
 	speedSettings, defaultSpeed, err := bm.GetPodcastSpeedSettings(ctx)
 	if err != nil {
 		log.Fatalf("Failed to get podcast speed settings: %v", err)
@@ -705,7 +814,7 @@ func showBackupSpeeds(backupFile string) {
 	t := table.New().
 		Border(lipgloss.RoundedBorder()).
 		Headers("Podcast Name", "Speed Enabled", "Speed Multiplier").
-		StyleFunc(func(row, col int) lipgloss.Style {
+		StyleFunc(func(_, _ int) lipgloss.Style {
 			return lipgloss.NewStyle().Padding(0, 1)
 		})
 
@@ -741,10 +850,12 @@ func updateBackupPriority(backupFile, feedURL string, priority int64) {
 func trimArticles(title string) string {
 	// Clean up title by removing common articles
 	sortTitle := strings.TrimSpace(title)
+
 	sortTitle = strings.ReplaceAll(sortTitle, "&amp;", "&") // Clean up title
 	for _, article := range leadingArticles {
 		sortTitle = strings.TrimPrefix(strings.ToLower(sortTitle), strings.ToLower(article)) // Remove common prefix
 	}
+
 	return strings.TrimSpace(sortTitle) // Final trim
 }
 
@@ -754,6 +865,7 @@ func colorDaysSince(days float64, includeDays bool) string {
 	if !includeDays {
 		val = fmt.Sprintf("%.0f", days)
 	}
+
 	switch {
 	case days < 100:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render(val)
@@ -776,10 +888,12 @@ func dimArticleInTitle(title string) string {
 
 	// Separate leading symbolic prefix (emojis, punctuation) that should remain untouched
 	prefixEnd := 0
+
 	for i, r := range cleaned {
 		// Stop at first letter (A-Z or a-z) to attempt article detection
 		if unicode.IsLetter(r) {
 			prefixEnd = i
+
 			break
 		}
 		// Continue accumulating prefix (emoji / punctuation / spaces)
@@ -806,6 +920,7 @@ func dimArticleInTitle(title string) string {
 			if out != "" {
 				out += " "
 			}
+
 			return out + faintArticle + " " + rest
 		}
 	}
@@ -816,11 +931,12 @@ func dimArticleInTitle(title string) string {
 
 // parseOPML reads and parses an OPML file, extracting podcast feed URLs.
 func parseOPML(filename string) ([]Outline, error) {
-	file, err := os.Open(filename)
+	file, err := os.Open(filename) //nolint:gosec // G304: opening OPML file from user input
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -834,9 +950,11 @@ func parseOPML(filename string) ([]Outline, error) {
 
 	var podcasts []Outline
 	extractOutlines(opml.Body.Outlines, &podcasts)
+
 	for i := range podcasts {
 		podcasts[i].SortTitle = trimArticles(podcasts[i].Title)
 	}
+
 	return podcasts, nil
 }
 
@@ -846,6 +964,7 @@ func extractOutlines(outlines []Outline, podcasts *[]Outline) {
 		if outline.XMLURL != "" {
 			*podcasts = append(*podcasts, outline)
 		}
+
 		if len(outline.Outlines) > 0 {
 			extractOutlines(outline.Outlines, podcasts)
 		}
@@ -855,46 +974,57 @@ func extractOutlines(outlines []Outline, podcasts *[]Outline) {
 // parseRSS parses RSS feed data.
 func parseRSS(data []byte) (*RSS, error) {
 	var rss RSS
+
 	err := xml.Unmarshal(data, &rss)
+
 	return &rss, err
 }
 
 // parseAtom parses Atom feed data.
 func parseAtom(data []byte) (*Atom, error) {
 	var atom Atom
+
 	err := xml.Unmarshal(data, &atom)
+
 	return &atom, err
 }
 
 // extractDatesFromRSS extracts publication dates from RSS items.
 func extractDatesFromRSS(items []Item) []time.Time {
 	var dates []time.Time
+
 	for _, item := range items {
 		if date, err := parseDate(item.PubDate); err == nil {
 			dates = append(dates, date)
 		}
 	}
+
 	sort.Slice(dates, func(i, j int) bool {
 		return dates[i].After(dates[j])
 	})
+
 	return dates
 }
 
 // extractDatesFromAtom extracts publication dates from Atom entries.
 func extractDatesFromAtom(entries []Entry) []time.Time {
 	var dates []time.Time
+
 	for _, entry := range entries {
 		dateStr := entry.Published
 		if dateStr == "" {
 			dateStr = entry.Updated
 		}
+
 		if date, err := parseDate(dateStr); err == nil {
 			dates = append(dates, date)
 		}
 	}
+
 	sort.Slice(dates, func(i, j int) bool {
 		return dates[i].After(dates[j])
 	})
+
 	return dates
 }
 
@@ -915,7 +1045,8 @@ func parseDate(dateStr string) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("unable to parse date: %s", dateStr)
+
+	return time.Time{}, fmt.Errorf("unable to parse date: %s", dateStr) //nolint:err113 // error contains date string
 }
 
 // calculateAverageLength calculates average episode length in minutes.
@@ -935,6 +1066,7 @@ func calculateAverageLength(items []Item) float64 {
 	if count == 0 {
 		return 30.0 // Default assumption: 30 minutes
 	}
+
 	return totalMinutes / float64(count)
 }
 
@@ -953,18 +1085,23 @@ func parseDuration(duration string) float64 {
 		return 0
 	}
 
-	var hours, minutes, seconds float64
-	var err error
+	var (
+		hours, minutes, seconds float64
+		err                     error
+	)
 
-	if len(parts) == 3 {
+	// Date parsing with fallback logic inherently requires nested checks.
+	if len(parts) == 3 { //nolint:nestif
 		hours, err = strconv.ParseFloat(parts[0], 64)
 		if err != nil {
 			return 0
 		}
+
 		minutes, err = strconv.ParseFloat(parts[1], 64)
 		if err != nil {
 			return 0
 		}
+
 		seconds, err = strconv.ParseFloat(parts[2], 64)
 		if err != nil {
 			return 0
@@ -974,6 +1111,7 @@ func parseDuration(duration string) float64 {
 		if err != nil {
 			return 0
 		}
+
 		seconds, err = strconv.ParseFloat(parts[1], 64)
 		if err != nil {
 			return 0
@@ -990,6 +1128,7 @@ func calculateAverageDaysBetween(dates []time.Time) float64 {
 	}
 
 	totalDays := 0.0
+
 	for i := range len(dates) - 1 {
 		days := dates[i].Sub(dates[i+1]).Hours() / 24
 		totalDays += days
@@ -1003,6 +1142,7 @@ func calculateDaysSinceLatest(dates []time.Time) float64 {
 	if len(dates) == 0 {
 		return 365.0 // Default: very old
 	}
+
 	return time.Since(dates[0]).Hours() / 24
 }
 
@@ -1013,19 +1153,22 @@ func calculateCompositeScore(stats PodcastStats) float64 {
 }
 
 // displayHistogram creates and displays a histogram of composite scores.
-func displayHistogram(allStats []PodcastStats) {
+func displayHistogram(allStats []PodcastStats) { //nolint:funlen // Complex histogram rendering logic; splitting would hurt readability
 	if len(allStats) == 0 {
 		fmt.Println("No podcast data to display")
+
 		return
 	}
 
 	// Find min and max scores for dynamic range
 	minScore := allStats[0].CompositeScore
+
 	maxScore := allStats[0].CompositeScore
 	for _, stats := range allStats {
 		if stats.CompositeScore < minScore {
 			minScore = stats.CompositeScore
 		}
+
 		if stats.CompositeScore > maxScore {
 			maxScore = stats.CompositeScore
 		}
@@ -1042,14 +1185,17 @@ func displayHistogram(allStats []PodcastStats) {
 
 	// Calculate the maximum width needed for formatting numbers
 	maxWidth := 0
+
 	for i := range 10 {
 		low := minScore + float64(i)*bucketSize
 		high := minScore + float64(i+1)*bucketSize
 		lowStr := fmt.Sprintf("%.1f", low)
 		highStr := fmt.Sprintf("%.1f", high)
+
 		if len(lowStr) > maxWidth {
 			maxWidth = len(lowStr)
 		}
+
 		if len(highStr) > maxWidth {
 			maxWidth = len(highStr)
 		}
@@ -1067,9 +1213,11 @@ func displayHistogram(allStats []PodcastStats) {
 		if bucketIndex >= 10 {
 			bucketIndex = 9
 		}
+
 		if bucketIndex < 0 {
 			bucketIndex = 0
 		}
+
 		buckets[bucketIndex]++
 	}
 
@@ -1085,9 +1233,11 @@ func displayHistogram(allStats []PodcastStats) {
 	fmt.Printf("Composite Score Distribution (%d podcasts):\n\n", len(allStats))
 
 	barWidth := 50
+
 	for i, count := range buckets {
 		label := bucketLabels[i]
 		bucketNumber := 10 - i // Reverse the bucket numbering
+
 		barLength := 0
 		if maxCount > 0 {
 			barLength = (count * barWidth) / maxCount
@@ -1115,7 +1265,7 @@ func displayHistogram(allStats []PodcastStats) {
 		PlaybackSpeed        float64
 	}
 
-	var rankings []PodcastRanking
+	rankings := make([]PodcastRanking, 0, len(allStats))
 
 	// Calculate bucket for each podcast and create rankings
 	for _, stats := range allStats {
@@ -1123,9 +1273,11 @@ func displayHistogram(allStats []PodcastStats) {
 		if bucketIndex >= 10 {
 			bucketIndex = 9
 		}
+
 		if bucketIndex < 0 {
 			bucketIndex = 0
 		}
+
 		bucketNumber := 10 - bucketIndex // Reverse the bucket numbering
 
 		title := stats.Title
@@ -1150,12 +1302,15 @@ func displayHistogram(allStats []PodcastStats) {
 		if a.Bucket == b.Bucket {
 			ti := a.SortTitle
 			tj := b.SortTitle
+
 			if ti == "" { // Fallback for safety
 				ti = trimArticles(a.Title)
 			}
+
 			if tj == "" {
 				tj = trimArticles(b.Title)
 			}
+
 			return strings.Compare(ti, tj)
 		}
 		// Descending bucket: higher bucket first
@@ -1165,17 +1320,20 @@ func displayHistogram(allStats []PodcastStats) {
 	// Create a table for better display
 	tbl := table.New().Wrap(true).
 		Headers("Priority", "Title", "Unlistened", "Speed", "Adj Length", "Avg Days Between", "Days Since Latest").
-		StyleFunc(func(row, col int) lipgloss.Style {
+		StyleFunc(func(_, col int) lipgloss.Style {
 			style := lipgloss.NewStyle().Padding(0, 1)
 			align := lipgloss.Left
+
 			switch col {
 			case 0, 2, 3, 4, 5, 6:
 				align = lipgloss.Center
 			case 1:
 				style = style.Width(39) // Adjust width for title column
 			}
+
 			return style.Align(align)
 		})
+
 	lastRanking := 0
 	for _, ranking := range rankings {
 		if ranking.Bucket != lastRanking {
@@ -1184,10 +1342,11 @@ func displayHistogram(allStats []PodcastStats) {
 				tbl.Row("--", "---", "--", "----", "----", "----", "----")
 			}
 		}
+
 		tbl.Row(
 			fmt.Sprintf("%2d", ranking.Bucket),
 			dimArticleInTitle(ranking.Title),
-			fmt.Sprintf("%d", ranking.UnlistenedEpisodes),
+			strconv.Itoa(ranking.UnlistenedEpisodes),
 			fmt.Sprintf("%.1fx", ranking.PlaybackSpeed),
 			fmt.Sprintf("%.1f mins", ranking.AvgEpisodeLengthMins),
 			fmt.Sprintf("%.0f days", ranking.AvgDaysBetween),
@@ -1199,7 +1358,7 @@ func displayHistogram(allStats []PodcastStats) {
 	fmt.Println(tbl)
 }
 
-// promptForTag prompts the user to select a tag filter
+// promptForTag prompts the user to select a tag filter.
 func promptForTag(bm *BackupManager) (string, error) {
 	ctx := context.Background()
 
@@ -1211,11 +1370,13 @@ func promptForTag(bm *BackupManager) (string, error) {
 
 	if len(tags) == 0 {
 		fmt.Println("No tags found in the database.")
+
 		return "", nil
 	}
 
 	fmt.Println("\nAvailable tags:")
 	fmt.Println("0. [All podcasts]")
+
 	for i, tag := range tags {
 		fmt.Printf("%d. %s\n", i+1, tag)
 	}
@@ -1224,7 +1385,7 @@ func promptForTag(bm *BackupManager) (string, error) {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
-		return "", fmt.Errorf("failed to read input")
+		return "", ErrFailedToReadInput
 	}
 
 	input := strings.TrimSpace(scanner.Text())
@@ -1234,37 +1395,46 @@ func promptForTag(bm *BackupManager) (string, error) {
 
 	choice, err := strconv.Atoi(input)
 	if err != nil {
-		return "", fmt.Errorf("invalid choice: %s", input)
+		return "", fmt.Errorf("invalid choice: %s", input) //nolint:err113 // error contains user input
 	}
 
 	if choice < 1 || choice > len(tags) {
-		return "", fmt.Errorf("choice out of range: %d", choice)
+		return "", fmt.Errorf("choice out of range: %d", choice) //nolint:err113 // error contains dynamic value
 	}
 
 	return tags[choice-1], nil
 }
 
-// displayPodcastStat displays a single podcast's statistics in a consistent format
-func displayPodcastStat(name string, author sql.NullString, feedUrl string, unplayedEpisodes int64, avgDuration sql.NullInt64, frequency sql.NullInt64, priority int64) {
-	authorStr := "Unknown"
+// displayPodcastStat displays a single podcast's statistics in a consistent format.
+func displayPodcastStat(
+	name string,
+	author sql.NullString,
+	feedURL string,
+	unplayedEpisodes int64,
+	avgDuration sql.NullInt64,
+	frequency sql.NullInt64,
+	priority int64,
+) {
+	authorStr := unknownStr
 	if author.Valid {
 		authorStr = author.String
 	}
 
-	avgDurationStr := "Unknown"
+	avgDurationStr := unknownStr
+
 	if avgDuration.Valid {
 		mins := avgDuration.Int64 / 1000 / 60 // Convert ms to minutes
 		avgDurationStr = fmt.Sprintf("%d mins", mins)
 	}
 
-	frequencyStr := "Unknown"
+	frequencyStr := unknownStr
 	if frequency.Valid {
 		frequencyStr = fmt.Sprintf("%d days", frequency.Int64)
 	}
 
 	fmt.Printf("Name: %s\n", dimArticleInTitle(name))
 	fmt.Printf("  Author: %s\n", authorStr)
-	fmt.Printf("  Feed URL: %s\n", feedUrl)
+	fmt.Printf("  Feed URL: %s\n", feedURL)
 	fmt.Printf("  Unlistened: %d episodes\n", unplayedEpisodes)
 	fmt.Printf("  Average Duration: %s\n", avgDurationStr)
 	fmt.Printf("  Frequency: %s\n", frequencyStr)

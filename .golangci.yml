@@ -1,0 +1,202 @@
+---
+# golangci-lint configuration
+# Generated for podstats project
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Enabled by default - critical linters
+    - errcheck      # Check unchecked errors
+    - govet         # Vet examines Go code
+    - ineffassign   # Detect unused assignments
+    - staticcheck   # Static analysis checks
+    - unused        # Check for unused code
+    # Bug detection / correctness
+    - bodyclose
+    - copyloopvar
+    - errchkjson
+    - err113
+    - errorlint     # Keep - has additional checks beyond revive's error-strings
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - recvcheck
+    - reassign
+    - sloglint
+    # Security & best practices
+    - gosec
+    - noctx         # Keep - more specific than revive's context-as-argument
+    # Performance
+    - unparam       # Keep - more comprehensive than revive's unused-parameter
+    - durationcheck
+    - wastedassign
+    - perfsprint
+    # Modern Go & simplification
+    - modernize
+    - unconvert     # Keep - more specific than gocritic's unconvert checker
+    - usestdlibvars
+    - ireturn
+    - exptostd
+    # Naming & conventions / style
+    - revive        # Metalinter with comprehensive rules
+    - misspell
+    - godot         # Keep - more specific than revive's comment formatting
+    - goconst
+    - tagalign
+    - tagliatelle
+    # Code organization & structure
+    - gochecknoinits
+    - gocheckcompilerdirectives
+    - funcorder
+    - decorder
+    - gochecksumtype
+    - interfacebloat
+    # Complexity & size
+    - funlen
+    - nestif
+    - maintidx
+    - nakedret      # Keep - gocritic doesn't have this checker
+    - lll
+    # Miscellaneous & broad diagnostics
+    - gocritic      # Metalinter with 108+ checkers
+    - dupl
+    - exhaustive
+    - dogsled
+    - mirror
+    - makezero
+    - nolintlint
+    - protogetter
+    - paralleltest
+    - thelper
+    - tparallel
+    - testableexamples
+    - testpackage
+    - goprintffuncname
+    - spancheck
+    - godoclint     # Keep - more comprehensive than revive's package-comments
+    - containedctx
+    - contextcheck  # Keep - more comprehensive than revive's context rules
+    - fatcontext
+    - forcetypeassert
+    - inamedparam
+    - intrange
+    - iotamixing
+    - nilnil
+    - nilnesserr
+    - nonamedreturns
+    - nosprintfhostport
+    - usetesting
+    - varnamelen
+    - asciicheck
+    - bidichk
+    - wsl_v5
+  settings:
+    funlen:
+      statements: -1
+    govet:
+      enable-all: true
+    gocritic:
+      # Most diagnostic and style checks are enabled by default
+      # Only need to explicitly enable experimental/disabled checks
+      enabled-checks:
+        # Experimental checks that replace removed linters
+        - builtinShadowDecl  # Replaces predeclared linter
+        # Additional performance checks (disabled by default)
+        - appendCombine
+        - equalFold
+        - indexAlloc
+        - rangeExprCopy
+        - rangeValCopy
+        - stringXbytes
+      settings:
+        rangeValCopy:
+          sizeThreshold: 128
+        rangeExprCopy:
+          sizeThreshold: 512
+    revive:
+      severity: warning
+      confidence: 0.8
+      enable-all-rules: false
+      rules:
+        # Core golint rules (enabled by default, explicitly listed)
+        - name: blank-imports
+        - name: context-as-argument   # Replaces contextcheck linter
+        - name: context-keys-type     # Part of contextcheck
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings         # Partially replaces errorlint
+        - name: error-naming          # Replaces errname linter
+        - name: exported              # Replaces godoclint for exported symbols
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments      # Replaces godoclint for package docs
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow     # Partially replaces nlreturn
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else      # Partially replaces nlreturn
+        - name: unused-parameter      # Replaces unparam linter
+        - name: unused-receiver
+        - name: unreachable-code
+        - name: redefines-builtin-id  # Similar to predeclared
+        # Additional useful rules
+        - name: atomic
+        - name: bool-literal-in-expr
+        - name: constant-logical-expr
+        - name: datarace
+        - name: defer
+          arguments: [[call-chain, loop, method-call, recover, return]]
+        - name: duplicated-imports
+        - name: early-return
+        - name: empty-lines
+        - name: identical-branches
+        - name: if-return
+        - name: import-shadowing
+        - name: modifies-parameter
+        - name: modifies-value-receiver
+        - name: optimize-operands-order
+        - name: range-val-address
+        - name: range-val-in-closure
+        - name: string-of-int
+        - name: struct-tag
+        - name: time-equal
+        - name: unconditional-recursion
+        - name: unexported-naming
+        - name: unhandled-error
+          arguments:
+            - fmt.Printf
+            - fmt.Println
+        - name: unnecessary-stmt
+        - name: useless-break
+        - name: waitgroup-by-value
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+    varnamelen:
+      ignore-names: [i, j, k, r, db, bm, rc, fp, ti, tj, a, b, s, t, f]
+    lll:
+      line-length: 140
+    cyclop:
+      max-complexity: 45
+    gocognit:
+      min-complexity: 80
+formatters:
+  enable:
+    - gofumpt
+
+
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,23 +20,32 @@ import (
 	"github.com/StephenBrown2/podstats/podcastaddict"
 )
 
+var (
+	ErrPodcastAddictDBNotFound = errors.New("podcastAddict.db not found in backup zip")
+	ErrBackupZipNotOpened      = errors.New("backup zip not opened - call ExtractDatabase first")
+	ErrPreferencesXMLNotFound  = errors.New("preferences.xml not found in backup zip")
+	ErrDatabaseNotOpened       = errors.New("database not opened - call OpenDatabase first")
+	ErrDatabaseNotOpenedShort  = errors.New("database not opened")
+	ErrOriginalZipNotOpened    = errors.New("original zip not opened")
+)
+
 // BackupManager handles operations on PodcastAddict backup files.
 type BackupManager struct {
-	backupPath  string
-	extractDir  string
-	dbPath      string
 	originalZip *zip.ReadCloser
 	db          *sql.DB
 	dbQueries   *podcastaddict.Queries
+	backupPath  string
+	extractDir  string
+	dbPath      string
 }
 
-// PreferencesMap represents the Android preferences XML structure
+// PreferencesMap represents the Android preferences XML structure.
 type PreferencesMap struct {
 	XMLName xml.Name              `xml:"map"`
 	Entries []PreferencesMapEntry `xml:",any"`
 }
 
-// PreferencesMapEntry represents individual preference entries
+// PreferencesMapEntry represents individual preference entries.
 type PreferencesMapEntry struct {
 	XMLName xml.Name
 	Name    string `xml:"name,attr"`
@@ -43,7 +53,7 @@ type PreferencesMapEntry struct {
 	Text    string `xml:",chardata"`
 }
 
-// PodcastSpeedSettings represents speed settings for a podcast
+// PodcastSpeedSettings represents speed settings for a podcast.
 type PodcastSpeedSettings struct {
 	PodcastID       int64
 	SpeedEnabled    bool
@@ -70,23 +80,26 @@ func NewBackupManager(backupPath string) (*BackupManager, error) {
 // ExtractDatabase extracts the SQLite database from the backup zip file.
 func (bm *BackupManager) ExtractDatabase() error {
 	// Open the zip file
-	r, err := zip.OpenReader(bm.backupPath)
+	zipReader, err := zip.OpenReader(bm.backupPath)
 	if err != nil {
 		return fmt.Errorf("failed to open backup zip: %w", err)
 	}
-	bm.originalZip = r
+
+	bm.originalZip = zipReader
 
 	// Find and extract the database file
 	var dbFile *zip.File
-	for _, f := range r.File {
+
+	for _, f := range zipReader.File {
 		if strings.HasSuffix(f.Name, "podcastAddict.db") {
 			dbFile = f
+
 			break
 		}
 	}
 
 	if dbFile == nil {
-		return fmt.Errorf("podcastAddict.db not found in backup zip")
+		return ErrPodcastAddictDBNotFound
 	}
 
 	// Extract the database file
@@ -94,17 +107,19 @@ func (bm *BackupManager) ExtractDatabase() error {
 	if err != nil {
 		return fmt.Errorf("failed to open database file in zip: %w", err)
 	}
-	defer rc.Close()
+
+	defer func() { _ = rc.Close() }()
 
 	// Create the database file in temp directory
 	outFile, err := os.Create(bm.dbPath)
 	if err != nil {
 		return fmt.Errorf("failed to create database file: %w", err)
 	}
-	defer outFile.Close()
+
+	defer func() { _ = outFile.Close() }()
 
 	// Copy the database content
-	_, err = io.Copy(outFile, rc)
+	_, err = io.Copy(outFile, rc) //nolint:gosec // G110: extracting user-provided backup file
 	if err != nil {
 		return fmt.Errorf("failed to copy database content: %w", err)
 	}
@@ -115,20 +130,22 @@ func (bm *BackupManager) ExtractDatabase() error {
 // ExtractPreferences extracts the preferences XML file from the backup zip file.
 func (bm *BackupManager) ExtractPreferences() (string, error) {
 	if bm.originalZip == nil {
-		return "", fmt.Errorf("backup zip not opened - call ExtractDatabase first")
+		return "", ErrBackupZipNotOpened
 	}
 
 	// Find the preferences file
 	var prefsFile *zip.File
+
 	for _, f := range bm.originalZip.File {
 		if strings.Contains(f.Name, "preferences.xml") {
 			prefsFile = f
+
 			break
 		}
 	}
 
 	if prefsFile == nil {
-		return "", fmt.Errorf("preferences.xml not found in backup zip")
+		return "", ErrPreferencesXMLNotFound
 	}
 
 	// Extract the preferences file
@@ -136,18 +153,21 @@ func (bm *BackupManager) ExtractPreferences() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open preferences file in zip: %w", err)
 	}
-	defer rc.Close()
+
+	defer func() { _ = rc.Close() }()
 
 	// Create the preferences file in temp directory
 	prefsPath := filepath.Join(bm.extractDir, "preferences.xml")
-	outFile, err := os.Create(prefsPath)
+
+	outFile, err := os.Create(prefsPath) //nolint:gosec // G304: creating file from extracted backup
 	if err != nil {
 		return "", fmt.Errorf("failed to create preferences file: %w", err)
 	}
-	defer outFile.Close()
+
+	defer func() { _ = outFile.Close() }()
 
 	// Copy the preferences content
-	_, err = io.Copy(outFile, rc)
+	_, err = io.Copy(outFile, rc) //nolint:gosec // G110: extracting user-provided backup file
 	if err != nil {
 		return "", fmt.Errorf("failed to copy preferences content: %w", err)
 	}
@@ -156,7 +176,8 @@ func (bm *BackupManager) ExtractPreferences() (string, error) {
 }
 
 // ParsePodcastSpeedSettings parses the preferences XML and extracts podcast speed settings.
-func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSettings, float64, error) {
+// Database query and parsing logic; splitting would fragment cohesion.
+func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSettings, float64, error) { //nolint:funlen
 	// Extract preferences if not already done
 	prefsPath, err := bm.ExtractPreferences()
 	if err != nil {
@@ -164,14 +185,16 @@ func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSet
 	}
 
 	// Read the preferences file
-	file, err := os.Open(prefsPath)
+	file, err := os.Open(prefsPath) //nolint:gosec // G304: opening extracted preferences file
 	if err != nil {
 		return nil, 1.0, fmt.Errorf("failed to open preferences file: %w", err)
 	}
-	defer file.Close()
+
+	defer func() { _ = file.Close() }()
 
 	// Parse XML
 	var prefs PreferencesMap
+
 	decoder := xml.NewDecoder(file)
 	if err := decoder.Decode(&prefs); err != nil {
 		return nil, 1.0, fmt.Errorf("failed to parse preferences XML: %w", err)
@@ -189,6 +212,7 @@ func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSet
 			if speed, err := strconv.ParseFloat(entry.Value, 64); err == nil {
 				defaultSpeed = speed
 			}
+
 			continue
 		}
 
@@ -237,13 +261,14 @@ func (bm *BackupManager) ParsePodcastSpeedSettings() (map[int64]*PodcastSpeedSet
 
 // GetPodcastSpeedSettings returns speed settings for all podcasts with their names.
 func (bm *BackupManager) GetPodcastSpeedSettings(ctx context.Context) ([]struct {
-	PodcastID       int64
 	PodcastName     string
-	SpeedEnabled    bool
+	PodcastID       int64
 	SpeedMultiplier float64
-}, float64, error) {
+	SpeedEnabled    bool
+}, float64, error,
+) {
 	if bm.dbQueries == nil {
-		return nil, 1.0, fmt.Errorf("database not opened - call OpenDatabase first")
+		return nil, 1.0, ErrDatabaseNotOpened
 	}
 
 	// Parse speed settings from preferences
@@ -259,19 +284,19 @@ func (bm *BackupManager) GetPodcastSpeedSettings(ctx context.Context) ([]struct 
 	}
 
 	// Combine podcast data with speed settings
-	var results []struct {
-		PodcastID       int64
+	results := make([]struct {
 		PodcastName     string
-		SpeedEnabled    bool
+		PodcastID       int64
 		SpeedMultiplier float64
-	}
+		SpeedEnabled    bool
+	}, 0, len(podcasts))
 
 	for _, podcast := range podcasts {
 		result := struct {
-			PodcastID       int64
 			PodcastName     string
-			SpeedEnabled    bool
+			PodcastID       int64
 			SpeedMultiplier float64
+			SpeedEnabled    bool
 		}{
 			PodcastID:       podcast.ID,
 			PodcastName:     podcast.Title,
@@ -312,6 +337,7 @@ func (bm *BackupManager) GetPodcastSpeedSettingsByURL(ctx context.Context) (map[
 
 	// Create the result map from feed URL to speed
 	urlToSpeed := make(map[string]float64)
+
 	for _, setting := range speedSettings {
 		if feedURL, exists := idToURL[setting.PodcastID]; exists {
 			if setting.SpeedEnabled {
@@ -333,19 +359,20 @@ func (bm *BackupManager) OpenDatabase() error {
 	}
 
 	// Test the connection
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	bm.db = db
 	bm.dbQueries = podcastaddict.New(db)
+
 	return nil
 }
 
 // GetPodcastStats retrieves podcast statistics from the database.
 func (bm *BackupManager) GetPodcastStats(ctx context.Context) ([]podcastaddict.GetPodcastStatsRow, error) {
 	if bm.dbQueries == nil {
-		return nil, fmt.Errorf("database not opened")
+		return nil, ErrDatabaseNotOpenedShort
 	}
 
 	return bm.dbQueries.GetPodcastStats(ctx)
@@ -354,7 +381,7 @@ func (bm *BackupManager) GetPodcastStats(ctx context.Context) ([]podcastaddict.G
 // GetPodcastStatsByTag retrieves podcast statistics filtered by tag.
 func (bm *BackupManager) GetPodcastStatsByTag(ctx context.Context, tag string) ([]podcastaddict.GetPodcastStatsByTagRow, error) {
 	if bm.dbQueries == nil {
-		return nil, fmt.Errorf("database not opened")
+		return nil, ErrDatabaseNotOpenedShort
 	}
 
 	return bm.dbQueries.GetPodcastStatsByTag(ctx, tag)
@@ -363,7 +390,7 @@ func (bm *BackupManager) GetPodcastStatsByTag(ctx context.Context, tag string) (
 // GetTags retrieves all available tags from the database.
 func (bm *BackupManager) GetTags(ctx context.Context) ([]string, error) {
 	if bm.dbQueries == nil {
-		return nil, fmt.Errorf("database not opened")
+		return nil, ErrDatabaseNotOpenedShort
 	}
 
 	return bm.dbQueries.GetTags(ctx)
@@ -372,7 +399,7 @@ func (bm *BackupManager) GetTags(ctx context.Context) ([]string, error) {
 // UpdatePodcastPriority updates the priority of a podcast by its feed URL.
 func (bm *BackupManager) UpdatePodcastPriority(ctx context.Context, feedURL string, priority int64) error {
 	if bm.dbQueries == nil {
-		return fmt.Errorf("database not opened")
+		return ErrDatabaseNotOpenedShort
 	}
 
 	// First, check if the podcast exists
@@ -382,15 +409,17 @@ func (bm *BackupManager) UpdatePodcastPriority(ctx context.Context, feedURL stri
 	}
 
 	found := false
+
 	for _, stat := range stats {
 		if stat.FeedUrl == feedURL {
 			found = true
+
 			break
 		}
 	}
 
 	if !found {
-		return fmt.Errorf("podcast with feed URL %s not found in database", feedURL)
+		return fmt.Errorf("podcast with feed URL %s not found in database", feedURL) //nolint:err113 // error contains dynamic feedURL
 	}
 
 	err = bm.dbQueries.UpdatePriority(ctx, podcastaddict.UpdatePriorityParams{
@@ -407,23 +436,27 @@ func (bm *BackupManager) UpdatePodcastPriority(ctx context.Context, feedURL stri
 // RepackageBackup creates a new backup zip file with the modified database.
 func (bm *BackupManager) RepackageBackup(outputPath string) error {
 	if bm.originalZip == nil {
-		return fmt.Errorf("original zip not opened")
+		return ErrOriginalZipNotOpened
 	}
 
 	// Create new zip file
-	outFile, err := os.Create(outputPath)
+	outFile, err := os.Create(outputPath) //nolint:gosec // G304: creating backup output file
 	if err != nil {
 		return fmt.Errorf("failed to create output zip: %w", err)
 	}
-	defer outFile.Close()
+
+	defer func() { _ = outFile.Close() }()
 
 	zipWriter := zip.NewWriter(outFile)
-	defer zipWriter.Close()
+
+	defer func() { _ = zipWriter.Close() }()
 
 	// Copy all files from original zip, replacing the database
 	for _, f := range bm.originalZip.File {
-		var writer io.Writer
-		var reader io.ReadCloser
+		var (
+			writer io.Writer
+			reader io.ReadCloser
+		)
 
 		// Create new file in zip
 		fileWriter, err := zipWriter.CreateHeader(&zip.FileHeader{
@@ -434,27 +467,27 @@ func (bm *BackupManager) RepackageBackup(outputPath string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create file in zip: %w", err)
 		}
+
 		writer = fileWriter
 
 		// If this is the database file, use our modified version
 		if strings.HasSuffix(f.Name, "podcastAddict.db") {
-			dbFile, err := os.Open(bm.dbPath)
+			reader, err = os.Open(bm.dbPath)
 			if err != nil {
 				return fmt.Errorf("failed to open modified database: %w", err)
 			}
-			reader = dbFile
 		} else {
 			// Use original file
-			rc, err := f.Open()
+			reader, err = f.Open()
 			if err != nil {
 				return fmt.Errorf("failed to open original file: %w", err)
 			}
-			reader = rc
 		}
 
 		// Copy content
-		_, err = io.Copy(writer, reader)
-		reader.Close()
+		_, err = io.Copy(writer, reader) //nolint:gosec // G110: copying from input archive; files originate from trusted backup
+		_ = reader.Close()
+
 		if err != nil {
 			return fmt.Errorf("failed to copy file content: %w", err)
 		}
@@ -486,7 +519,7 @@ func (bm *BackupManager) Close() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("cleanup errors: %v", errs)
+		return fmt.Errorf("cleanup errors: %v", errs) //nolint:err113 // error aggregates multiple errors
 	}
 
 	return nil
@@ -499,7 +532,8 @@ func UpdateBackupPriorities(backupPath string, priorityUpdates map[string]int64)
 	if err != nil {
 		return fmt.Errorf("failed to create backup manager: %w", err)
 	}
-	defer bm.Close()
+
+	defer func() { _ = bm.Close() }()
 
 	// Extract database
 	if err := bm.ExtractDatabase(); err != nil {
@@ -523,25 +557,28 @@ func UpdateBackupPriorities(backupPath string, priorityUpdates map[string]int64)
 	if err := bm.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)
 	}
+
 	bm.db = nil
 	bm.dbQueries = nil
 
 	// Create output filename with timestamp
 	timestamp := time.Now().Format("20060102_150405")
+
 	var outputPath string
 
 	// Handle both .backup.zip and .backup extensions
 	lowerBackupPath := strings.ToLower(backupPath)
-	if strings.HasSuffix(lowerBackupPath, ".backup.zip") {
+	switch {
+	case strings.HasSuffix(lowerBackupPath, ".backup.zip"):
 		outputPath = strings.Replace(backupPath, ".backup.zip", fmt.Sprintf("_updated_%s.backup.zip", timestamp), 1)
-	} else if strings.HasSuffix(lowerBackupPath, ".backup") {
+	case strings.HasSuffix(lowerBackupPath, ".backup"):
 		outputPath = strings.Replace(backupPath, ".backup", fmt.Sprintf("_updated_%s.backup", timestamp), 1)
-	} else {
+	default:
 		// Fallback: append timestamp before the last dot or at the end
 		if lastDot := strings.LastIndex(backupPath, "."); lastDot != -1 {
-			outputPath = backupPath[:lastDot] + fmt.Sprintf("_updated_%s", timestamp) + backupPath[lastDot:]
+			outputPath = backupPath[:lastDot] + "_updated_" + timestamp + backupPath[lastDot:]
 		} else {
-			outputPath = backupPath + fmt.Sprintf("_updated_%s", timestamp)
+			outputPath = backupPath + "_updated_" + timestamp
 		}
 	}
 
@@ -551,5 +588,6 @@ func UpdateBackupPriorities(backupPath string, priorityUpdates map[string]int64)
 	}
 
 	fmt.Printf("Updated backup saved as: %s\n", outputPath)
+
 	return nil
 }

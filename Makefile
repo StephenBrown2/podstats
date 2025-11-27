@@ -1,10 +1,10 @@
 # Makefile for Podcast Statistics Analyzer
-
-.PHONY: build clean test run-sample
+.PHONY: build clean test run-sample lint format
+# set unstable := true
 
 # Default target
 build:
-	go build -o podstats main.go
+	go build -o podstats .
 
 # Clean build artifacts
 clean:
@@ -28,7 +28,11 @@ fmt:
 
 # Run linter
 lint:
-	golangci-lint run
+	golangci-lint run --fix
+
+# Format code using golangci-lint v2 formatters (e.g., gofumpt)
+format:
+	golangci-lint fmt
 
 # Build for different platforms
 build-all:
