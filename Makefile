@@ -3,7 +3,7 @@
 # set unstable := true
 
 # Default target
-build:
+build: generate
 	go build -o podstats .
 
 # Clean build artifacts
@@ -25,6 +25,9 @@ deps:
 # Format code
 fmt:
 	go fmt ./...
+
+generate:
+	go generate ./...
 
 # Run linter
 lint:
